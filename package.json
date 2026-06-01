@@ -1,0 +1,37 @@
+{
+  "name": "learn-claude-code-typescript",
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "s01": "tsx s01_agent_loop/agent.ts",
+    "s02": "tsx s02_tool_use/agent.ts",
+    "s03": "tsx s03_permission/agent.ts",
+    "s04": "tsx s04_hooks/agent.ts",
+    "s05": "tsx s05_todo_write/agent.ts",
+    "s06": "tsx s06_subagent/agent.ts",
+    "s07": "tsx s07_skill_loading/agent.ts",
+    "s08": "tsx s08_context_compact/agent.ts",
+    "s09": "tsx s09_memory/agent.ts",
+    "s10": "tsx s10_system_prompt/agent.ts",
+    "s11": "tsx s11_error_recovery/agent.ts",
+    "s12": "tsx s12_task_system/agent.ts",
+    "s13": "tsx s13_background_tasks/agent.ts",
+    "s14": "tsx s14_cron_scheduler/agent.ts",
+    "s15": "tsx s15_agent_teams/agent.ts",
+    "s16": "tsx s16_team_protocols/agent.ts",
+    "s17": "tsx s17_autonomous_agents/agent.ts",
+    "s18": "tsx s18_worktree_isolation/agent.ts",
+    "s19": "tsx s19_mcp_plugin/agent.ts",
+    "s20": "tsx s20_comprehensive/agent.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# Local tool/user state
+.claude/settings.local.json
+.DS_Store
+
+# Generated output
+coverage/
+*.js.map
