@@ -15,7 +15,7 @@ s01 只有一个工具（bash），所以分发逻辑很简单：
 const output = yield* perform({ type: 'BashExec', ... });
 ```
 
-但真实系统有几十个工具。如果用 `if/else` 或 `switch` 分发，每加一个工具都要修改核心循环——这违反了开闭原则，也让循环越来越难读。
+但真实系统有几十个工具。如果用 `if/else` 或 `switch` 分发，每加一个工具都要修改核心循环——这违反了"只做扩展、不改动已有代码"的原则，也让循环越来越难读。
 
 **解法**：让 **effect.type** 字符串直接成为路由键。新增工具 = 新增 Effect 类型 + 新增 Handler，核心循环完全不变。
 
@@ -38,24 +38,24 @@ bash 工具虽然万能，但效率低：
 
 ```typescript
 // s01：bash 万能工具
-interface BashExecEffect extends BaseEffect {
-  type: 'BashExec';
-  input: { command: string };  // 无结构
-  output: string;
-}
+interface BashExecEffect extends Effect<
+  'BashExec',
+  { command: string }, // 无结构
+  string
+> {}
 
 // s02：专用工具，有明确的类型签名
-interface ReadFileEffect extends BaseEffect {
-  type: 'ReadFile';
-  input: { path: string; limit?: number };  // 有结构
-  output: string;
-}
+interface ReadFileEffect extends Effect<
+  'ReadFile',
+  { path: string; limit?: number }, // 有结构
+  string
+> {}
 
-interface WriteFileEffect extends BaseEffect {
-  type: 'WriteFile';
-  input: { path: string; content: string };
-  output: string;
-}
+interface WriteFileEffect extends Effect<
+  'WriteFile',
+  { path: string; content: string },
+  string
+> {}
 ```
 
 | Python | 代数效应 TypeScript |
@@ -135,7 +135,9 @@ LLM 返回 tool_use 块
 ```typescript
 function safePath(p: string, workdir: string): string {
   const resolved = path.resolve(workdir, p);
-  if (!resolved.startsWith(workdir)) {
+  const rel = path.relative(workdir, resolved);
+  // 用相对路径判断越界：`/工作区-xxx` 这类同前缀兄弟目录也会被拦下。
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`路径越界: ${p}`);
   }
   return resolved;
@@ -153,14 +155,24 @@ npm run s02
 输出示例：
 ```
 [S02] Tool Use 启动
+
 [Chat] → 发送 1 条消息...
-[LLM]  ← stop_reason: tool_use, 工具: read_file, write_file
-[ReadFile] → ./hello.txt
-[WriteFile] → ./output.txt
+[LLM]  ← stop_reason: tool_use, 工具: read_file, glob
+[ReadFile] → ./package.json
+[ReadFile] ← 100 字符
+[GlobSearch] → **/*.ts
+[GlobSearch] ← 68 个文件
 [Chat] → 发送 3 条消息...
+[LLM]  ← stop_reason: tool_use, 工具: write_file
+[WriteFile] → ./s02_output.txt
+[Chat] → 发送 5 条消息...
 [LLM]  ← stop_reason: end_turn
-[S02] 完成: 已读取 hello.txt 并写入 output.txt
+
+[S02] 完成: 已读取 package.json 并写入摘要到 ./s02_output.txt
 ```
+
+> `GlobSearch` 会真正按 `pattern` 在工作区（`WORKSPACE_ROOT`）内递归匹配，
+> 命中数随仓库内容变化；`WriteFile` 写入的是**工作区相对路径**，因此能通过 `safePath` 校验。
 
 ---
 

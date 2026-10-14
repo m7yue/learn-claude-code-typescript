@@ -12,7 +12,7 @@ Without a loop, the model can only answer questions. With a loop, the model can 
 
 ## 2. Engineers design the harness, not the agency
 
-The model's agency comes from training and inference ability. External code cannot make a model without ability into a strong Agent.
+The model's ability to act on its own comes from training and inference ability. External code cannot make a model without ability into a strong Agent.
 
 What engineers actually design is the harness:
 
@@ -46,23 +46,23 @@ In this project:
 | `perform()` | entry point for issuing effects inside a Generator |
 | `runAgent()` | drives the loop and sends handler results back to the Agent |
 
-This separation keeps Agent logic clear and centralizes side effects at the boundary. You can swap out a handler and run the same Agent logic in test, teaching, sandbox, or real-model environments.
+This separation keeps Agent logic clear and keeps side effects in one place at the edge. You can swap out a handler and run the same Agent logic in test, teaching, sandbox, or real-model environments.
 
 ## 5. The 20 chapters are really expanding the same harness
 
 | Phase | Chapters | First principles |
 | --- | --- | --- |
 | Basic loop | s01 Agent Loop | the model needs tool result feedback to form an action loop |
-| Tool capability | s02 Tool Use | tools expand the model’s reachable action space |
+| Tool capability | s02 Tool Use | tools expand what the model can do |
 | Safety boundary | s03 Permission, s04 Hooks | real side effects require approval, interception, and auditing |
-| Working memory | s05 TodoWrite | long-running work needs externalized planning |
-| Context management | s06 Subagent, s08 Compact | exploration noise and history cannot be stuffed into the main context forever |
+| Working memory | s05 TodoWrite | long-running work needs a plan written down outside the model |
+| Context management | s06 Subagent, s08 Compact | exploration clutter and history cannot be stuffed into the main context forever |
 | Knowledge and memory | s07 Skill, s09 Memory, s10 Prompt | knowledge should be loaded on demand, prompt should be assembled at runtime |
 | Resilience | s11 Recovery | errors should be classified and handled instead of stopping everything |
-| Persistent control plane | s12 Task, s13 Background, s14 Cron | long-term work needs tasks, async, and time triggers |
+| Always-on task control | s12 Task, s13 Background, s14 Cron | long-term work needs tasks, async, and time triggers |
 | Multi-Agent collaboration | s15 Team, s16 Protocol, s17 Autonomous | collaboration needs identity, messaging, and explicit protocols |
 | Execution isolation and extension | s18 Worktree, s19 MCP | parallel modifications need isolation, external capability needs standard integration |
-| Comprehensive | s20 Comprehensive | there are many mechanisms, but the loop is still only one |
+| Comprehensive | s20 Comprehensive | there are many mechanisms, but there is still only one loop |
 
 ## 6. When learning, focus on three questions
 

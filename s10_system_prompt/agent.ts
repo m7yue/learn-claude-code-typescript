@@ -11,24 +11,20 @@
  */
 
 import { runAgent } from '../runtime/core.ts';
-import type { BaseEffect, PerformFn } from '../runtime/core.ts';
-import type { Message, LLMResponse, ToolUseBlock } from '../runtime/types.ts';
+import type { Effect, PerformFn } from '../runtime/core.ts';
+import type { Message, LLMResponse, ToolResultBlock } from '../runtime/types.ts';
+import { extractText, getToolUseBlocks } from '../runtime/response.ts';
+import { callChat } from '../runtime/model.ts';
+import { schemasFor } from '../runtime/tool-schemas.ts';
+import { ENVIRONMENT_PROMPT } from '../runtime/system-prompt.ts';
 
 // ============================================================
 // Part 1: Effect 类型定义
 // ============================================================
 
-interface ChatEffect extends BaseEffect {
-  type: 'Chat';
-  input: { messages: Message[]; systemPrompt: string };
-  output: LLMResponse;
-}
+interface ChatEffect extends Effect<'Chat', { messages: Message[]; systemPrompt: string }, LLMResponse> {}
 
-interface BashExecEffect extends BaseEffect {
-  type: 'BashExec';
-  input: { command: string };
-  output: string;
-}
+interface BashExecEffect extends Effect<'BashExec', { command: string }, string> {}
 
 // s10 新增：运行时提示词组装
 interface PromptContext {
@@ -38,11 +34,7 @@ interface PromptContext {
   activeTask?: string;
 }
 
-interface AssemblePromptEffect extends BaseEffect {
-  type: 'AssemblePrompt';
-  input: { context: PromptContext };
-  output: string; // 组装好的 system prompt
-}
+interface AssemblePromptEffect extends Effect<'AssemblePrompt', { context: PromptContext }, string> {} // 组装好的 system prompt
 
 type S10Effect = ChatEffect | BashExecEffect | AssemblePromptEffect;
 
@@ -50,13 +42,14 @@ type S10Effect = ChatEffect | BashExecEffect | AssemblePromptEffect;
 // Part 2: Handler 实现
 // ============================================================
 
-// 提示词片段库（运行时按需组合）
+// 提示词片段库：每个片段要么是「静态字符串」，要么是「按上下文生成文本的函数」。
+// 这里用宽松的联合类型存储，assemblePrompt 再按各自的调用形态取值。
 const PROMPT_SECTIONS: Record<string, string | ((...args: string[]) => string)> = {
-  identity: '你是一个编码助手。直接行动，不要过多解释。',
-  tools: (tools: string[]) => `可用工具: ${tools.join(', ')}`,
-  workspace: (ws: string) => `工作目录: ${ws}`,
-  memory: (mem: string) => `记忆:\n${mem}`,
-  task: (task: string) => `当前任务: ${task}`,
+  identity: `你是一个编码助手。直接行动，不要过多解释。运行环境：${ENVIRONMENT_PROMPT}。`,
+  tools: (tools: string[]) => `可用工具：${tools.join('、')}`,
+  workspace: (ws: string) => `工作目录：${ws}`,
+  memory: (mem: string) => `记忆：\n${mem}`,
+  task: (task: string) => `当前任务：${task}`,
 } as any;
 
 // 组装函数
@@ -78,16 +71,6 @@ function assemblePrompt(context: PromptContext): string {
 let lastContextKey = '';
 let lastPrompt = '';
 let cacheHits = 0;
-
-function extractText(response: LLMResponse): string {
-  return response.content
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map(b => b.text).join('');
-}
-
-function getToolUseBlocks(response: LLMResponse): ToolUseBlock[] {
-  return response.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
-}
 
 function mockLLM(messages: Message[]): LLMResponse {
   const round = messages.filter(m => m.role === 'assistant').length;
@@ -122,7 +105,7 @@ const s10Handlers = {
     const round = messages.filter(m => m.role === 'assistant').length;
     console.log(`\n[Chat] → 轮次 ${round + 1} (system: ${systemPrompt.length} 字符)`);
     await new Promise(r => setTimeout(r, 50));
-    const response = mockLLM(messages);
+    const response = await callChat(mockLLM, messages, { tools: schemasFor('bash'), system: systemPrompt });
     const tools = getToolUseBlocks(response).map(b => b.name).join(', ');
     console.log(`[LLM]  ← ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -174,27 +157,39 @@ function* agentLoop(perform: PerformFn<S10Effect>) {
     const systemPrompt = yield* perform({ type: 'AssemblePrompt', input: { context } });
 
     const response = yield* perform({ type: 'Chat', input: { messages, systemPrompt } });
-    messages.push({ role: 'assistant', content: extractText(response) });
+    messages.push({ role: 'assistant', content: response.content });
 
     if (response.stop_reason !== 'tool_use') {
       return extractText(response);
     }
 
-    const toolResults: Array<{ tool_use_id: string; content: string }> = [];
+    const toolResults: ToolResultBlock[] = [];
 
     for (const block of getToolUseBlocks(response)) {
-      let output: string;
-      switch (block.name) {
-        case 'bash':
-          output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
-          break;
-        default:
-          output = `[未知工具] ${block.name}`;
+      try {
+        let output: string;
+        switch (block.name) {
+          case 'bash':
+            output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
+            break;
+          default:
+            output = `[未知工具] ${block.name}`;
+        }
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: output });
+      } catch (err) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `[错误] ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        });
       }
-      toolResults.push({ tool_use_id: block.id, content: output });
     }
 
-    messages.push({ role: 'user', content: JSON.stringify(toolResults) });
+    messages.push({
+      role: 'user',
+      content: toolResults,
+    });
 
     // 下一轮：更新上下文（如果有变化，下次 AssemblePrompt 会重新生成）
     // 例如：完成某个任务后，activeTask 可能变化

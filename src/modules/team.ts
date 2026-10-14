@@ -54,12 +54,30 @@ export class MessageBus {
     return `Sent ${message.type} from ${input.from} to ${input.to}`;
   }
 
+  /**
+   * 读完即取走：读完就把收件箱清空（与 s15 章节的设计一致）。
+   *
+   * 注意：先读、再清空这两步之间不是不可分割的，多个进程同时读同一个信箱时可能丢消息。
+   * 需要「读取但不清空」时，请用 peekInbox()。
+   */
   async readInbox(name: string): Promise<TeamMessage[]> {
     await this.init();
     const path = this.inboxPath(name);
     try {
       const raw = await readFile(path, "utf8");
       await writeFile(path, "", "utf8");
+      return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line) as TeamMessage);
+    } catch (error) {
+      if (hasErrorCode(error, "ENOENT")) return [];
+      throw error;
+    }
+  }
+
+  /** 只读不清空：保留信箱内容，适合反复查看。 */
+  async peekInbox(name: string): Promise<TeamMessage[]> {
+    await this.init();
+    try {
+      const raw = await readFile(this.inboxPath(name), "utf8");
       return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line) as TeamMessage);
     } catch (error) {
       if (hasErrorCode(error, "ENOENT")) return [];
@@ -126,12 +144,15 @@ export function createTeamTools(input: {
       return input.bus.send({
         from: input.self,
         to: String(args.to ?? ""),
-        content: String(args.content ?? ""),
+        // 章节统一用 body（s15）；兼容旧字段 content。
+        content: String(args.body ?? args.content ?? ""),
         type: args.type as TeamMessageType | undefined,
       });
     },
-    read_inbox: async () => {
-      return JSON.stringify(await input.bus.readInbox(input.self), null, 2);
+    check_inbox: async (args: Record<string, unknown>) => {
+      // 章节用 args.agentId（s15）；缺省回退到自己的收件箱。
+      const agentId = args.agentId === undefined ? input.self : String(args.agentId);
+      return JSON.stringify(await input.bus.readInbox(agentId), null, 2);
     },
     broadcast: async (args: Record<string, unknown>) => {
       const members = (await input.roster.list()).map((member) => member.name);

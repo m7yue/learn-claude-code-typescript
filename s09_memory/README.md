@@ -37,29 +37,43 @@ s08 的压缩策略（snip、micro、auto）是为了让长任务能够继续—
 
 ## 代数效应视角
 
-三个 Effect 构成记忆系统：
+五个 Effect 构成记忆系统：
 
 ```typescript
 // 读记忆（无 filename 则读索引）
-interface ReadMemoryEffect extends BaseEffect {
-  type: 'ReadMemory';
-  input: { filename?: string };
-  output: string;
-}
+interface ReadMemoryEffect extends Effect<
+  'ReadMemory',
+  { filename?: string },
+  string
+> {}
 
 // 写记忆（带 YAML frontmatter 的 Markdown 文件）
-interface WriteMemoryEffect extends BaseEffect {
-  type: 'WriteMemory';
-  input: { name: string; type: MemoryType; description: string; body: string };
-  output: string;
-}
+interface WriteMemoryEffect extends Effect<
+  'WriteMemory',
+  { name: string; type: MemoryType; description: string; body: string },
+  string
+> {}
 
-// 选择相关记忆（基于当前上下文）
-interface SelectMemoryEffect extends BaseEffect {
-  type: 'SelectMemory';
-  input: { context: string; maxItems?: number };
-  output: string[]; // 相关文件名列表
-}
+// 选择相关记忆（基于当前上下文，真实 LLM 调用 + 关键词回退）
+interface SelectMemoryEffect extends Effect<
+  'SelectMemory',
+  { context: string; maxItems?: number },
+  string[] // 相关文件名列表
+> {}
+
+// 每轮结束后抽取新记忆（真实 LLM 调用 → 写文件）
+interface ExtractMemoriesEffect extends Effect<
+  'ExtractMemories',
+  { messages: Message[] },
+  number // 抽取并写入的条数
+> {}
+
+// 文件数达阈值时合并/去重（真实 LLM 调用 → 删旧写新）
+interface ConsolidateMemoriesEffect extends Effect<
+  'ConsolidateMemories',
+  { threshold?: number },
+  { from: number; to: number } | null
+> {}
 ```
 
 **双层索引架构**：
@@ -73,21 +87,22 @@ interface SelectMemoryEffect extends BaseEffect {
 |--------|-------------------|
 | `write_memory_file(name, type, desc, body)` | `WriteMemory` Effect → Handler 写文件 + 重建索引 |
 | `read_memory_index()` | `ReadMemory` Effect（无 filename 参数） |
-| `select_relevant_memories(messages, max=5)` | `SelectMemory` Effect → Handler 关键词匹配或 LLM 选择 |
+| `select_relevant_memories(messages, max=5)` | `SelectMemory` Effect → 真实 LLM 选择，关键词回退 |
+| `extract_memories(messages)` | `ExtractMemories` Effect → 真实 LLM 抽取 → 写入磁盘 |
+| `consolidate_memories()` | `ConsolidateMemories` Effect → 数量 ≥ 10 时真实 LLM 合并 |
 | 四种类型: user/feedback/project/reference | `MemoryType` 联合类型 |
 
 ---
 
 ## 解决方案
 
-### 记忆文件格式（与原项目完全一致）
+### 记忆文件格式
 
 ```markdown
 ---
 name: user-prefers-tabs
 description: 用户偏好使用 Tab 而非空格缩进
-metadata:
-  type: feedback
+type: feedback
 ---
 
 用户明确表示喜欢 Tab 缩进。
@@ -96,18 +111,67 @@ metadata:
 **How to apply:** 在生成代码时始终用 Tab。
 ```
 
+索引 `MEMORY.md` 由 `_rebuild_index()` 从所有 `*.md`（排除索引自身）重建：
+
+```markdown
+- [user-prefers-tabs](user-prefers-tabs.md) — 用户偏好使用 Tab 而非空格缩进
+```
+
+### 三条真实 LLM 链路（mock 只替换模型本身）
+
+记忆机制的关键是：**select / extract / consolidate 都是真实的 `callChat(...)` 调用**，
+mock 模式只是把「模型」换成结果稳定的 `mockSelector` / `mockExtractor` / `mockConsolidator`，
+调用路径、文件读写、索引重建全部是真的。
+
+#### 1. SelectMemory — 选择相关记忆（带关键词回退）
+
+```typescript
+// 1) 把每条记忆的 name + description 编成目录
+const catalog = files.map((f, i) => `${i}: ${f.name} — ${f.description}`).join('\n');
+
+// 2) 让模型只看目录就选出相关下标（省 token）
+const response = await callChat(mockSelector, [{ role: 'user', content: prompt }], { maxTokens: 200 });
+const indices = extractJsonArray(extractText(response).trim(), false); // [0, 3]
+
+// 3) 解析失败或模型不可用时，回退到 name+description 的关键词匹配
+```
+
+#### 2. ExtractMemories — 每轮结束后抽取新记忆
+
+```typescript
+// 收集最近 10 条消息 → 连同「已有记忆摘要」一起交给模型去重
+const response = await callChat(mockExtractor, [{ role: 'user', content: prompt }], { maxTokens: 800 });
+// 模型返回 [{ name, type, description, body }, ...] → 逐条 writeMemoryFile（真实写入磁盘 + 重建索引）
+```
+
+#### 3. ConsolidateMemories — 达阈值时合并（Dream）
+
+```typescript
+const CONSOLIDATE_THRESHOLD = 10;
+if (files.length < CONSOLIDATE_THRESHOLD) return null;
+// 模型返回合并后的 JSON 数组 → 删除旧文件 → 逐条重写
+```
+
 ### 会话启动流程
 
 ```typescript
 function* agentLoop(perform: PerformFn<S09Effect>) {
-  // 1. 读取记忆索引，注入 system prompt
+  // 1. 读取记忆索引，注入 system prompt（system 在整轮内固定）
   const memoryIndex = yield* perform({ type: 'ReadMemory', input: {} });
-  const systemPrompt = `...\n\nMEMORY:\n${memoryIndex}`;
+  const systemPrompt =
+    baseSystemPrompt() +
+    (memoryIndex ? `\n\n记忆目录：\n${memoryIndex}` : '') +
+    '……当记忆与当前用户请求冲突时，以当前用户请求为准。';
 
-  // 2. 正常对话循环...
+  // 2. 用真实 LLM 选择相关记忆 → 读取内容 → 注入当前用户轮次
+  const selected = yield* perform({ type: 'SelectMemory', input: { context, maxItems: 5 } });
+  // …拼成 <relevant_memories>…</relevant_memories> 前缀注入
 
-  // 3. 循环结束后，从历史中提取新记忆
-  // （在真实实现中，通过 LLM 调用分析对话提取）
+  // 3. 正常对话循环（模型可自行调用 write_memory / read_memory / select_memory）
+
+  // 4. 一轮结束（end_turn）：抽取新记忆 + 达阈值则合并
+  yield* perform({ type: 'ExtractMemories', input: { messages: preCompress } });
+  yield* perform({ type: 'ConsolidateMemories', input: {} });
 }
 ```
 
@@ -122,6 +186,9 @@ function* agentLoop(perform: PerformFn<S09Effect>) {
 ReadMemory (索引) → 注入 system prompt
     │
     ▼
+SelectMemory（真实 LLM 调用，关键词回退）
+    │  选出相关文件名 → 读取正文 → 注入当前用户轮次
+    ▼
 ┌─────────────────────────────────────────────┐
 │  对话循环                                    │
 │                                             │
@@ -131,15 +198,15 @@ ReadMemory (索引) → 注入 system prompt
 │  → Handler 写文件 + 重建 MEMORY.md           │
 │                                             │
 └─────────────────────────────────────────────┘
-    │
+    │  end_turn
     ▼
-下次会话：ReadMemory 读到 "user-prefers-tabs"
-    │
+ExtractMemories（真实 LLM 调用）
+    │  从最近对话抽取 {name,type,description,body} → 写入磁盘
     ▼
-SelectMemory 选择与当前任务相关的记忆
-    │
+ConsolidateMemories（文件数 ≥ 10 时，真实 LLM 调用）
+    │  合并重复/淘汰过时 → 删旧写新
     ▼
-相关记忆内容注入上下文 → LLM 知道用 Tab ✓
+下次会话：ReadMemory 读到索引 → SelectMemory 选中相关 → 注入上下文 → 用 Tab ✓
 ```
 
 ---
@@ -150,8 +217,21 @@ SelectMemory 选择与当前任务相关的记忆
 npm run s09
 ```
 
+默认 `AGENT_MODE=mock` 离线运行：mock 模型依次产出
+`write_memory → select_memory → 收尾`，随后真实地执行
+`extract（10 条）→ consolidate（11 → 3 条）`，最终在 `.memory/` 下
+留下 `MEMORY.md` 与合并后的记忆文件。
+
+用独立工作区运行并观察写入磁盘：
+
+```bash
+AGENT_WORKSPACE=$(mktemp -d) npm run s09
+```
+
 ---
 
 ## 本章小结
 
-**Memory Effect 是压缩的"豁免层"：它把不能被压缩掉的信息保存到文件系统，跨压缩、跨会话持久存在。ReadMemory/WriteMemory 是文件 I/O 的类型化效应表达。**
+**Memory Effect 是压缩之外的一层：它把不能被压缩掉的信息保存到文件系统，跨压缩、跨会话持久存在。**
+其中 select / extract / consolidate 三条链路都以**真实 LLM 调用**为机制，mock 只替换模型本身，
+因此离线教学与真实运行共享同一条实现。

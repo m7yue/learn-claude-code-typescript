@@ -1,3 +1,5 @@
+import type { ToolInputSchema } from "../../runtime/model.ts";
+
 export type Role = "system" | "user" | "assistant" | "tool";
 
 export interface Message {
@@ -9,7 +11,7 @@ export interface Message {
 export interface ToolDefinition {
   name: string;
   description: string;
-  parameters?: Record<string, unknown>;
+  parameters?: ToolInputSchema;
 }
 
 export interface ToolUse {

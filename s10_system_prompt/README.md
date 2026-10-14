@@ -9,13 +9,13 @@
 **问题的本质**：不同时刻的 Agent 需要不同的上下文，但硬编码的 system prompt 是静态的。
 
 早期章节的 `SYSTEM` 常量在程序启动时就固定了。但实际运行中：
-- 有没有记忆？有多少？→ memory 片段要不要包含？
-- 当前在做什么任务？→ task 片段要不要包含？
-- 哪些工具是激活的？→ tools 片段需要更新
+- 有没有记忆？有多少？→ 记忆片段要不要包含？
+- 当前在做什么任务？→ 任务片段要不要包含？
+- 哪些工具是激活的？→ 工具片段需要更新
 
 如果把所有可能用到的内容都放进 system prompt，就浪费 token；如果只放固定内容，就缺失上下文。
 
-**解法**：system prompt 在运行时组装，每轮根据当前状态动态生成，并用确定性缓存避免重复工作。
+**解法**：system prompt 在运行时组装，每轮根据当前状态动态生成，并用结果稳定的缓存避免重复工作。
 
 ---
 
@@ -23,10 +23,10 @@
 
 ```typescript
 // 静态 system prompt：永远一样，无论当前状态如何
-const SYSTEM = `你是编码助手。
-可用工具: bash, read_file, write_file, todo_write, load_skill...
-工作目录: /project
-记忆: （空——但不知道何时有记忆）`;
+const SYSTEM = `你是一个编码助手。运行环境：类 Unix 系统：bash 工具运行系统 shell。
+可用工具：bash、read_file、write_file、todo_write、load_skill...
+工作目录：/project
+记忆：（空——但不知道何时有记忆）`;
 ```
 
 ---
@@ -36,11 +36,11 @@ const SYSTEM = `你是编码助手。
 引入 `AssemblePrompt` Effect：
 
 ```typescript
-interface AssemblePromptEffect extends BaseEffect {
-  type: 'AssemblePrompt';
-  input: { context: PromptContext };
-  output: string; // 组装好的 system prompt
-}
+interface AssemblePromptEffect extends Effect<
+  'AssemblePrompt',
+  { context: PromptContext },
+  string // 组装好的 system prompt
+> {}
 
 interface PromptContext {
   enabledTools: string[];
@@ -82,11 +82,11 @@ AssemblePrompt: async (effect) => {
 
 ```typescript
 const PROMPT_SECTIONS = {
-  identity: '你是编码助手。直接行动，不要过多解释。',
-  tools: (tools: string[]) => `可用工具: ${tools.join(', ')}`,
-  workspace: (ws: string) => `工作目录: ${ws}`,
-  memory: (mem: string) => `记忆:\n${mem}`,
-  task: (task: string) => `当前任务: ${task}`,
+  identity: `你是一个编码助手。直接行动，不要过多解释。运行环境：${ENVIRONMENT_PROMPT}。`,
+  tools: (tools: string[]) => `可用工具：${tools.join('、')}`,
+  workspace: (ws: string) => `工作目录：${ws}`,
+  memory: (mem: string) => `记忆：\n${mem}`,
+  task: (task: string) => `当前任务：${task}`,
 };
 ```
 

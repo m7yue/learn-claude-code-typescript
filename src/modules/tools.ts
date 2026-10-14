@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
+import { specsToToolDefinitions } from "../core/tool-specs.ts";
 import type { ToolDefinition } from "../core/types.ts";
 
 const execFileAsync = promisify(execFile);
@@ -12,13 +13,11 @@ export interface ToolContext {
 
 export type ToolHandler = (args: Record<string, unknown>) => Promise<string> | string;
 
-export const baseToolDefinitions: ToolDefinition[] = [
-  { name: "bash", description: "在工作区内执行一个安全 shell 命令。" },
-  { name: "read_file", description: "读取工作区内文件。" },
-  { name: "write_file", description: "写入工作区内文件。" },
-  { name: "edit_file", description: "用精确匹配替换文件中的一段文本。" },
-  { name: "glob", description: "查找匹配 glob 模式的文件。" },
-];
+/** 基础工具的名字列表（与 createBaseTools 的 key 一一对应）。 */
+export const BASE_TOOL_NAMES = ["bash", "read_file", "write_file", "edit_file", "glob"] as const;
+
+// 定义从 runtime 注册表派生，name/description/parameters 不再手写。
+export const baseToolDefinitions: ToolDefinition[] = specsToToolDefinitions(...BASE_TOOL_NAMES);
 
 export function safePath(cwd: string, path: string): string {
   const full = resolve(cwd, path);

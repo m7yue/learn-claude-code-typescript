@@ -33,24 +33,24 @@ BashExec: async (effect) => {
 权限检查需要一个新的 Effect：
 
 ```typescript
-interface RequestPermissionEffect extends BaseEffect {
-  type: 'RequestPermission';
-  input: {
+interface RequestPermissionEffect extends Effect<
+  'RequestPermission',
+  {
     toolName: string;
     args: Record<string, unknown>;
     reason: string;
-  };
-  output: { allowed: boolean; reason?: string };
-}
+  },
+  { allowed: boolean; reason?: string }
+> {}
 ```
 
-**三道闸门**，在 Handler 内部串联：
+**三道检查关口**，在 Handler 内部串联：
 
 ```
 BashExec Handler 被调用
       │
       ▼
-Gate 1: DenyList 检查（硬否，无商量）
+Gate 1: DenyList 检查（命中禁止清单就拒绝，没有商量余地）
   ├─ 命中 → 拒绝，返回错误消息
   └─ 通过 ↓
 
@@ -74,7 +74,7 @@ Gate 3: 用户审批（RequestPermission Effect）
 ```typescript
 const testHandlers = {
   ...prodHandlers,
-  RequestPermission: async () => ({ allowed: true }), // 测试自动放行
+  RequestPermission: async () => ({ allowed: true }), // 测试里自动允许
 };
 ```
 
@@ -82,7 +82,7 @@ const testHandlers = {
 
 ## 解决方案
 
-### 三道闸门实现
+### 三道检查关口实现
 
 ```typescript
 const DENY_LIST = ['rm -rf /', 'sudo', 'shutdown', 'reboot', ':(){ :|:& };:'];
@@ -91,12 +91,15 @@ const PERMISSION_RULES = [
   {
     match: (tool: string, args: Record<string, unknown>) =>
       tool === 'BashExec' && DENY_LIST.some(d => String(args.command).includes(d)),
-    reason: '命令在硬否列表中',
+    reason: '命令在禁止清单中',
     autoReject: true,
   },
   {
-    match: (tool: string, args: Record<string, unknown>) =>
-      tool === 'WriteFile' && !String(args.path).startsWith(WORKDIR),
+    match: (tool: string, args: Record<string, unknown>) => {
+      if (tool !== 'WriteFile') return false;
+      const rel = path.relative(WORKDIR, path.resolve(WORKDIR, String(args.path ?? '')));
+      return rel.startsWith('..') || path.isAbsolute(rel);
+    },
     reason: '写入工作区外的路径',
     autoReject: false, // 需要用户审批
   },
@@ -131,7 +134,7 @@ Agent: yield* perform({ type: 'BashExec', input: { command: 'rm -rf /' } })
                      ▼
               Gate 1: DenyList
               ├─ 'rm -rf /' 命中！
-              └─ return "[拒绝] 命令在硬否列表中"
+              └─ return "[拒绝] 命令在禁止清单中"
                      │
                      ▼（若未命中 DenyList）
               Gate 2: Rules 匹配
@@ -163,25 +166,25 @@ npm run s03
 
 [Chat] → 发送 1 条消息...
 [LLM]  ← stop_reason: tool_use, 工具: bash
-[Gate1] ✓ 通过硬否列表
+[Gate1] ✓ 未命中禁止清单
 [Gate2] ⚠ 命中规则: 可能的破坏性命令
-[Permission] → 询问用户: 是否允许执行 BashExec?
+[Permission] → 询问用户: 是否允许执行 BashExec? (原因: 可能的破坏性命令)
 [Permission] ← 用户: 同意（mock）
-[BashExec] → ls -la
-[BashExec] ← (文件列表)
-
-[Chat] → 发送 1 条消息...
-[LLM]  ← stop_reason: tool_use, 工具: bash
-[Gate1] ✗ 命中硬否列表: rm -rf /
-[BashExec] ← [拒绝] 命令在硬否列表中
+[BashExec] → rm temp.txt
 
 [Chat] → 发送 3 条消息...
+[LLM]  ← stop_reason: tool_use, 工具: bash
+[Gate1] ✗ 命中禁止清单: rm -rf /
+[拒绝] bash: 命令在禁止清单中: "rm -rf /"
+
+[Chat] → 发送 5 条消息...
 [LLM]  ← stop_reason: end_turn
-[S03] 完成
+
+[S03] 完成: 操作已完成（部分被拒绝）。
 ```
 
 ---
 
 ## 本章小结
 
-**权限是副作用的守门人，它本身也是副作用，因此住在 Handler 层。三道闸门（硬否/规则/用户审批）完全封装在 Handler 实现中，业务逻辑（Generator）零感知。**
+**权限是副作用的守门人，它本身也是副作用，因此住在 Handler 层。三道检查关口（禁止清单/规则/用户审批）完全封装在 Handler 实现中，业务逻辑（Generator）零感知。**

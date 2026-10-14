@@ -47,10 +47,10 @@ export class TodoList {
 
 export function createTodoTools(todoList: TodoList) {
   return {
-    TodoWrite: (args: Record<string, unknown>) => {
-      const items = Array.isArray(args.items) ? args.items : [];
+    todo_write: (args: Record<string, unknown>) => {
+      const items = Array.isArray(args.todos) ? args.todos : [];
       return todoList.update(items as TodoItem[]);
     },
-    TodoRead: () => todoList.render(),
+    todo_read: () => todoList.render(),
   };
 }

@@ -39,27 +39,27 @@ Agent 在处理多步骤任务时：
 
 ```typescript
 // 写计划（创建/更新任务列表）
-interface TodoWriteEffect extends BaseEffect {
-  type: 'TodoWrite';
-  input: {
+interface TodoWriteEffect extends Effect<
+  'TodoWrite',
+  {
     todos: Array<{
       content: string;
       status: 'pending' | 'in_progress' | 'completed';
       activeForm: string;
     }>;
-  };
-  output: string; // 确认消息
-}
+  },
+  string // 确认消息
+> {}
 
 // 读计划（获取当前任务列表摘要）
-interface TodoReadEffect extends BaseEffect {
-  type: 'TodoRead';
-  input: Record<string, never>;
-  output: string; // 格式化的任务列表
-}
+interface TodoReadEffect extends Effect<
+  'TodoRead',
+  Record<string, never>,
+  string // 格式化的任务列表
+> {}
 ```
 
-**唠叨提醒机制（Nag）**：
+**唠叨提醒机制（反复催促）**：
 
 这是本章最有趣的设计——如果 Agent 连续多轮没有调用 `TodoWrite`，系统自动注入一条提醒消息。
 
@@ -159,11 +159,11 @@ npm run s05
 [Chat] → 发送 1 条消息...
 [LLM]  ← stop_reason: tool_use, 工具: todo_write
 [TodoWrite] 更新任务列表:
-  [in_progress] 列出目录结构
-  [pending] 读取配置文件
-  [pending] 生成报告
+  ◑ [in_progress] 列出目录结构
+  ○ [pending] 读取配置文件
+  ○ [pending] 生成报告
 ...
-[系统提醒] 3 轮未更新计划
+⏰ [系统提醒] 你已经 3 轮没有更新任务列表了。对于多步骤任务，请使用 todo_write 工具保持计划的可见性。
 ...
 ```
 
@@ -171,4 +171,4 @@ npm run s05
 
 ## 本章小结
 
-**TodoWrite Effect 让"当前计划"成为 Agent 上下文的显式组成部分，而不是隐藏在对话历史的某个角落。唠叨提醒机制通过简单的计数器，在 Generator 层强制保持计划的新鲜度。**
+**TodoWrite Effect 让"当前计划"成为 Agent 上下文的显式组成部分，而不是隐藏在对话历史的某个角落。唠叨提醒机制通过简单的计数器，在 Generator 层强制让计划保持最新。**

@@ -239,12 +239,12 @@ CC 的 MCP 认证（`auth.ts`）支持完整的 OAuth 2.0 + PKCE 流程：
 ### 七、连接生命周期的错误处理
 
 CC 对 MCP 连接有精细的错误分类和重试（`client.ts:1266-1402`）：
-- 终局性错误（ECONNRESET、ETIMEDOUT、EPIPE 等）：连续 3 次 → 关闭 + 重连
+- 无法恢复的错误（ECONNRESET、ETIMEDOUT、EPIPE 等）：连续 3 次 → 关闭 + 重连
 - 工具调用 401：令牌过期 → 抛出 `McpAuthError` → 触发重认证
 - 工具调用超时：`Promise.race` 超时（可配置，默认约 28 小时）
 - Stdio 断连：按 SIGINT → SIGTERM → SIGKILL 顺序杀进程
 
-教学版用 `throw new Error(...)` 兜底，不做错误分类。
+教学版只用 `throw new Error(...)` 简单抛出错误，不做错误分类。
 
 ### 教学版的简化
 
@@ -254,7 +254,7 @@ CC 对 MCP 连接有精细的错误分类和重试（`client.ts:1266-1402`）：
 | Channel 通知 | 省略 | Server 可反向推消息给 Agent |
 | OAuth | 省略 | 完整 PKCE 流程 + 令牌持久化 |
 | 配置合并 | 直接传 serverId | 多层优先级合并 |
-| 错误分类 | throw Error | 终局性 / 401 / 超时 / 断连分类处理 |
+| 错误分类 | throw Error | 无法恢复的错误 / 401 / 超时 / 断连分类处理 |
 | MCP 工具权限 | description 文本标注 | 独立权限系统 |
 
 </details>

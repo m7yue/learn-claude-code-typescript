@@ -9,8 +9,12 @@
  */
 
 import { runAgent } from '../runtime/core.ts';
-import type { BaseEffect, PerformFn, AgentFactory } from '../runtime/core.ts';
-import type { Message, LLMResponse, ToolUseBlock } from '../runtime/types.ts';
+import type { Effect, PerformFn, AgentFactory } from '../runtime/core.ts';
+import type { Message, LLMResponse, ToolResultBlock } from '../runtime/types.ts';
+import { extractText, getToolUseBlocks, messageText } from '../runtime/response.ts';
+import { callChat } from '../runtime/model.ts';
+import { schemasFor } from '../runtime/tool-schemas.ts';
+import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -18,33 +22,14 @@ import * as path from 'node:path';
 // Part 1: Effect 类型定义
 // ============================================================
 
-interface ChatEffect extends BaseEffect {
-  type: 'Chat';
-  input: { messages: Message[]; isSubAgent?: boolean };
-  output: LLMResponse;
-}
+interface ChatEffect extends Effect<'Chat', { messages: Message[]; isSubAgent?: boolean }, LLMResponse> {}
 
-interface BashExecEffect extends BaseEffect {
-  type: 'BashExec';
-  input: { command: string };
-  output: string;
-}
+interface BashExecEffect extends Effect<'BashExec', { command: string }, string> {}
 
-interface ReadFileEffect extends BaseEffect {
-  type: 'ReadFile';
-  input: { path: string; limit?: number };
-  output: string;
-}
+interface ReadFileEffect extends Effect<'ReadFile', { path: string; limit?: number }, string> {}
 
 // s06 新增：子 Agent 委派
-interface DelegateEffect extends BaseEffect {
-  type: 'Delegate';
-  input: {
-    task: string;
-    maxRounds?: number;
-  };
-  output: string;
-}
+interface DelegateEffect extends Effect<'Delegate', { task: string; maxRounds?: number }, string> {}
 
 type S06Effect = ChatEffect | BashExecEffect | ReadFileEffect | DelegateEffect;
 
@@ -56,21 +41,10 @@ type SubEffect = ChatEffect | BashExecEffect | ReadFileEffect;
 // ============================================================
 
 const WORKDIR = process.cwd();
+// 子 Agent 的默认最大轮数；超限则中断并返回已得到的最后一段文本。
 const DEFAULT_MAX_ROUNDS = 10;
 
-function extractText(response: LLMResponse): string {
-  return response.content
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map(b => b.text).join('');
-}
-
-function getToolUseBlocks(response: LLMResponse): ToolUseBlock[] {
-  return response.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
-}
-
 // Mock LLM：主 Agent 两轮（委派 + 报告），子 Agent 两轮（读文件 + 总结）
-let subRound = 0;
-
 function mockMainLLM(messages: Message[]): LLMResponse {
   const round = messages.filter(m => m.role === 'assistant').length;
   if (round === 0) {
@@ -89,13 +63,12 @@ function mockMainLLM(messages: Message[]): LLMResponse {
   }
   return {
     stop_reason: 'end_turn',
-    content: [{ type: 'text', text: `已完成分析。子任务结论: ${messages[messages.length - 1].content}` }],
+    content: [{ type: 'text', text: `已完成分析。子任务结论: ${messageText(messages[messages.length - 1].content)}` }],
   };
 }
 
 function mockSubLLM(messages: Message[]): LLMResponse {
   const round = messages.filter(m => m.role === 'assistant').length;
-  subRound = round;
 
   if (round === 0) {
     return {
@@ -118,13 +91,20 @@ function mockSubLLM(messages: Message[]): LLMResponse {
 }
 
 // 子 Agent 专用的基础 Handlers（不含 Delegate）
+// real 模式注入的 system prompt，引导模型使用工具完成任务。
+// mock 模式不读取该字段，故零配置运行行为不变。
+const SUB_SYSTEM_PROMPT = buildSystemPrompt('使用 bash、read_file 完成被委派的子任务，然后返回简洁的最终结论。');
+
 const subHandlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const { messages } = effect.input;
     const round = messages.filter(m => m.role === 'assistant').length;
     console.log(`  [子] Chat → 轮次 ${round + 1}`);
     await new Promise(r => setTimeout(r, 50));
-    const response = mockSubLLM(messages);
+    const response = await callChat(mockSubLLM, messages, {
+      tools: schemasFor('bash', 'read_file'),
+      system: SUB_SYSTEM_PROMPT,
+    });
     const tools = getToolUseBlocks(response).map(b => b.name).join(', ');
     console.log(`  [子] LLM ← ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -139,7 +119,8 @@ const subHandlers = {
     console.log(`  [子] ReadFile → ${effect.input.path}`);
     try {
       const resolved = path.resolve(WORKDIR, effect.input.path);
-      if (!resolved.startsWith(WORKDIR)) return '[错误] 路径越界';
+      const rel = path.relative(WORKDIR, resolved);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) return '[错误] 路径越界';
       const content = fs.readFileSync(resolved, 'utf8');
       const lines = content.split('\n');
       return effect.input.limit ? lines.slice(0, effect.input.limit).join('\n') : content;
@@ -159,27 +140,39 @@ function createSubAgentFactory(task: string, maxRounds: number): AgentFactory<Su
     while (rounds < maxRounds) {
       const response = yield* perform({ type: 'Chat', input: { messages, isSubAgent: true } });
       finalText = extractText(response);
-      messages.push({ role: 'assistant', content: finalText });
+      messages.push({ role: 'assistant', content: response.content });
       rounds++;
 
       if (response.stop_reason !== 'tool_use') break;
 
-      const toolResults: Array<{ tool_use_id: string; content: string }> = [];
+      const toolResults: ToolResultBlock[] = [];
       for (const block of getToolUseBlocks(response)) {
-        let output: string;
-        switch (block.name) {
-          case 'bash':
-            output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
-            break;
-          case 'read_file':
-            output = yield* perform({ type: 'ReadFile', input: { path: block.input['path'] as string } });
-            break;
-          default:
-            output = `[不可用工具] ${block.name}`;
+        try {
+          let output: string;
+          switch (block.name) {
+            case 'bash':
+              output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
+              break;
+            case 'read_file':
+              output = yield* perform({ type: 'ReadFile', input: { path: block.input['path'] as string } });
+              break;
+            default:
+              output = `[不可用工具] ${block.name}`;
+          }
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: output });
+        } catch (err) {
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: `[错误] ${err instanceof Error ? err.message : String(err)}`,
+            is_error: true,
+          });
         }
-        toolResults.push({ tool_use_id: block.id, content: output });
       }
-      messages.push({ role: 'user', content: JSON.stringify(toolResults) });
+      messages.push({
+        role: 'user',
+        content: toolResults,
+      });
     }
 
     if (rounds >= maxRounds) {
@@ -189,13 +182,20 @@ function createSubAgentFactory(task: string, maxRounds: number): AgentFactory<Su
   };
 }
 
+// real 模式注入的 system prompt，引导模型使用工具完成任务。
+// mock 模式不读取该字段，故零配置运行行为不变。
+const MAIN_SYSTEM_PROMPT = buildSystemPrompt('使用 task 工具进行聚焦探索或处理自成一体的子任务；自身也可用 bash、read_file。');
+
 const s06Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const { messages } = effect.input;
     const round = messages.filter(m => m.role === 'assistant').length;
     console.log(`\n[主] Chat → 轮次 ${round + 1}`);
     await new Promise(r => setTimeout(r, 50));
-    const response = mockMainLLM(messages);
+    const response = await callChat(mockMainLLM, messages, {
+      tools: schemasFor('bash', 'read_file', 'task'),
+      system: MAIN_SYSTEM_PROMPT,
+    });
     const tools = getToolUseBlocks(response).map(b => b.name).join(', ');
     console.log(`[主] LLM ← ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -237,42 +237,54 @@ function* agentLoop(perform: PerformFn<S06Effect>) {
 
   while (true) {
     const response = yield* perform({ type: 'Chat', input: { messages } });
-    messages.push({ role: 'assistant', content: extractText(response) });
+    messages.push({ role: 'assistant', content: response.content });
 
     if (response.stop_reason !== 'tool_use') {
       return extractText(response);
     }
 
-    const toolResults: Array<{ tool_use_id: string; content: string }> = [];
+    const toolResults: ToolResultBlock[] = [];
 
     for (const block of getToolUseBlocks(response)) {
-      let output: string;
+      try {
+        let output: string;
 
-      switch (block.name) {
-        case 'bash':
-          output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
-          break;
-        case 'read_file':
-          output = yield* perform({ type: 'ReadFile', input: { path: block.input['path'] as string } });
-          break;
-        case 'task':
-          // Delegate Effect：委派子任务
-          output = yield* perform({
-            type: 'Delegate',
-            input: {
-              task: block.input['task'] as string,
-              maxRounds: 10,
-            },
-          });
-          break;
-        default:
-          output = `[未知工具] ${block.name}`;
+        switch (block.name) {
+          case 'bash':
+            output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
+            break;
+          case 'read_file':
+            output = yield* perform({ type: 'ReadFile', input: { path: block.input['path'] as string } });
+            break;
+          case 'task':
+            // Delegate Effect：委派子任务
+            output = yield* perform({
+              type: 'Delegate',
+              input: {
+                task: block.input['task'] as string,
+                maxRounds: 10,
+              },
+            });
+            break;
+          default:
+            output = `[未知工具] ${block.name}`;
+        }
+
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: output });
+      } catch (err) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `[错误] ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        });
       }
-
-      toolResults.push({ tool_use_id: block.id, content: output });
     }
 
-    messages.push({ role: 'user', content: JSON.stringify(toolResults) });
+    messages.push({
+      role: 'user',
+      content: toolResults,
+    });
   }
 }
 

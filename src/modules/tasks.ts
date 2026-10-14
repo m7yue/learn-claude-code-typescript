@@ -3,6 +3,16 @@ import { join } from "node:path";
 
 export type TaskStatus = "pending" | "in_progress" | "completed";
 
+/**
+ * 工程层的任务记录：以磁盘文件（.tasks/task_<id>.json）为持久化单位。
+ *
+ * 与 runtime/types.ts 的教学版 TaskRecord 故意不同：
+ *   - id：这里是数字（对应文件名），教学版是字符串（依赖图里的节点标识）
+ *   - owner：这里用空串表示"未认领"，教学版用 null
+ *   - 这里有 worktree/createdAt/updatedAt 等工程字段
+ *   - blockedBy 是可选扩展，用于表达依赖关系
+ * 两者的互转见 src/modules/task-adapter.ts。
+ */
 export interface TaskRecord {
   id: number;
   subject: string;
@@ -12,6 +22,7 @@ export interface TaskRecord {
   worktree: string;
   createdAt: string;
   updatedAt: string;
+  blockedBy?: string[];
 }
 
 export class TaskBoard {
@@ -38,6 +49,7 @@ export class TaskBoard {
       worktree: "",
       createdAt: now,
       updatedAt: now,
+      blockedBy: [],
     };
     await this.save(task);
     return task;

@@ -10,7 +10,7 @@
 
 当主 Agent 处理复杂任务时，它的消息历史（`messages[]`）会积累大量中间步骤。如果把一个子任务完全在主 Agent 的上下文里执行，那子任务的每一个工具调用、每一条中间输出都会永远留在历史里。
 
-随着任务增多，历史变长，模型的注意力被分散——它需要在茫茫历史中找到当前任务的相关信息。信噪比下降，性能随之下降。
+随着任务增多，历史变长，模型的注意力被分散——它需要在茫茫历史中找到当前任务的相关信息。有用信息被大量无关内容淹没，性能随之下降。
 
 **解法**：为子任务创建一个**隔离的效应域**——独立的消息历史，独立的工具集，独立的循环。子任务完成后，只把最终结论带回主 Agent，中间过程全部丢弃。
 
@@ -41,15 +41,15 @@
 引入 `Delegate` Effect（与 boss-agent-v3.ts 完全一致）：
 
 ```typescript
-interface DelegateEffect extends BaseEffect {
-  type: 'Delegate';
-  input: {
+interface DelegateEffect extends Effect<
+  'Delegate',
+  {
     task: string;           // 子任务描述
     tools?: string[];       // 允许使用的工具（可限制）
     maxRounds?: number;     // 最大轮数（防止无限循环）
-  };
-  output: string;           // 子 Agent 的最终结论
-}
+  },
+  string           // 子 Agent 的最终结论
+> {}
 ```
 
 **Delegate Handler = 一个完整的 `runAgent()` 调用**：
@@ -152,18 +152,24 @@ npm run s06
 ```
 [S06] Subagent 启动
 
-[主] Chat → 委派子任务...
---- 子 Agent 启动: 分析 package.json ---
-[子] Chat → 轮次 1/5
-[子] ReadFile → package.json
-[子] Chat → 轮次 2/5
+[主] Chat → 轮次 1
+[主] LLM ← tool_use, 工具: task
+
+--- 子 Agent 启动: "读取 package.json 并列出所有依赖项" ---
+  [子] Chat → 轮次 1
+  [子] LLM ← tool_use, 工具: read_file
+  [子] ReadFile → ./package.json
+  [子] Chat → 轮次 2
+  [子] LLM ← end_turn
 --- 子 Agent 完成 ---
-[主] 收到子任务结论: "依赖: tsx@4.x, typescript@5.x"
-[主] Chat → 基于结论生成报告...
+[主] 收到子任务结论: "依赖分析完成：项目使用 tsx 和 typescript 作为开发依赖。..."
+
+[主] Chat → 轮次 2
+[主] LLM ← end_turn
 ```
 
 ---
 
 ## 本章小结
 
-**Delegate Effect = 在一个新的效应域里运行子 Generator，只把最终输出带回。这是"上下文隔离"的代数效应表达：副作用在子域消化，主域只看到干净的结论。**
+**Delegate Effect = 在一个新的效应域里运行子 Generator，只把最终输出带回。这是"上下文隔离"的代数效应表达：副作用在子域处理完，主域只看到干净的结论。**

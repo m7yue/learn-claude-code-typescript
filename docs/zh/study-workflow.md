@@ -2,11 +2,11 @@
 
 这个项目建议按三条线对照学习：
 
-1. [Learn Claude Code](https://learn.shareai.run/zh/)：先理解原始问题和课程主叙事。
+1. [Learn Claude Code](https://learn.shareai.run/zh/)：先理解原始问题和课程主线内容。
 2. `s01_agent_loop/` 到 `s20_comprehensive/`：看 TypeScript + Algebraic Effects 逐章改写。
 3. `src/`：共享 TypeScript harness 模块，适合理解可复用抽象。
 
-中文站当前章节顺序和本仓库目录有少量差异，先看 `learn-shareai-crosswalk.md` 的对照表会更顺。
+中文站现在是 20 章、5 大关注点，与本仓库 `s01`–`s20` 基本 1:1 对应，可以直接按章号对照；细节见 `learn-shareai-crosswalk.md`。
 
 建议每章按这个顺序学习：
 
@@ -29,21 +29,23 @@
 例如：
 
 ```txt
-中文站: s08 Hook 系统
+中文站: s04 Hook 系统
 本项目: s04_hooks/agent.ts
 共享模块: src/modules/hooks.ts
 ```
 
 ## 2. 再读本章 README
 
-每章 README 都按同一结构写：
+每章 README 共享一条主线骨架（不同章节会有少量差异）：
 
-- 原版关注点
-- TS 改写
-- 新增 Effect / Handler / State
-- 阅读路径
+- 第一性原理
+- 问题
+- 代数效应视角
+- 解决方案 / 工作原理
+- 运行（输出示例）
+- 本章小结
 
-这能帮你避免只看代码细节，忘记这一章在 harness 架构中的位置。
+先抓住「这一章新增了什么 Effect / Handler / State」，能帮你避免只看代码细节，忘记它在 harness 架构中的位置。
 
 ## 3. 运行本章 demo
 
@@ -54,11 +56,11 @@ npm run s02
 npm run s20
 ```
 
-这些 demo 默认使用 `ScriptedModel`，输出稳定。先理解 harness，再替换真实模型。
+这些 demo 默认使用**各章自带的 mock/按脚本执行的 handler**，输出稳定、零配置、不访问网络。先理解 harness，再考虑切换真实模型。
 
 ## 4. 追到共享模块
 
-章节代码会尽量保持“同构可读”，共享实现放在 `src/modules`：
+章节代码会尽量保持“结构一致、方便对照阅读”，共享实现放在 `src/modules`：
 
 | 机制 | 共享模块 |
 | --- | --- |
@@ -92,3 +94,24 @@ npm run s20
 3. 如果接入真实模型 API，需要替换哪一个 handler？
 
 这个思维方式比记住某段代码更重要。
+
+## 6. 接入真实模型（可选）
+
+章节的 `Chat` handler 通过 `runtime/model.ts` 的 `callChat()` 统一开关：mock 模式走各章自己的 mock，real 模式走真实模型。**没有改动 `ChatEffect` 的定义**——因为「能力属于 handler，意图属于 generator」。
+
+```sh
+cp .env.example .env        # 默认就是 DeepSeek 的 Anthropic 兼容端点
+# 在 .env 里填 ANTHROPIC_AUTH_TOKEN（DeepSeek API Key）
+npm run s01 -- --real       # 单章 real 模式
+npm run harness:real        # 工程层 harness：真实模型 + 真实工具（bash/读写文件）
+```
+
+要点：
+
+- 默认 `AGENT_MODE=mock`，零配置、不访问网络；只有 `--real` 或 `AGENT_MODE=real` 才会请求模型。
+- 请求 real 但未配置 token 时，会打印警告并回退 mock，不会报错。
+- `.env` 已被 gitignore，切勿把 key 写进代码或提交。
+- 章节 real 模式下 **LLM 是真调用，工具处理仍是各章的教学 handler**；要完全真实的工具执行，用 `npm run harness:real`。
+
+更多配置见根 `README.md` 的「真实模型（可选）」一节。
+

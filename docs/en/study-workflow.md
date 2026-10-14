@@ -4,9 +4,9 @@ This project recommends a three-track learning approach:
 
 1. [Learn Claude Code](https://learn.shareai.run/zh/): understand the original problem and course narrative.
 2. `s01_agent_loop/` to `s20_comprehensive/`: review the TypeScript + Algebraic Effects rewrite.
-3. `src/`: explore shared TypeScript harness modules for reusable abstractions.
+3. `src/`: explore shared TypeScript harness modules for reusable building blocks.
 
-The Chinese site chapter order and this repository directory order differ slightly. Start with `learn-shareai-crosswalk.md` to see the mapping.
+The official site now has 20 chapters across 5 concern groups and lines up almost one-to-one with this repository's `s01`–`s20`, so you can pair chapters directly by number. See `learn-shareai-crosswalk.md` for details.
 
 Read each chapter in this order:
 
@@ -29,21 +29,23 @@ Go to Learn Claude Code and focus on what each chapter adds compared to the prev
 For example:
 
 ```txt
-Chinese site: s08 Hook system
+Chinese site: s04 Hook system
 This repo: s04_hooks/agent.ts
 Shared module: src/modules/hooks.ts
 ```
 
 ## 2. Read this chapter’s README next
 
-Each chapter README follows the same structure:
+Each chapter README shares a common outline (with minor per-chapter variation):
 
-- the original focus
-- the TS rewrite
-- the new Effect / Handler / State
-- the reading path
+- First principles
+- The problem
+- Algebraic-effects view
+- Solution / How it works
+- Run (sample output)
+- Chapter summary
 
-This helps you avoid getting lost in code details and missing the chapter’s role in the harness architecture.
+First identify "what new Effect / Handler / State this chapter adds" — that keeps you from getting lost in code details and missing the chapter's role in the harness architecture.
 
 ## 3. Run the chapter demo
 
@@ -54,11 +56,11 @@ npm run s02
 npm run s20
 ```
 
-These demos use the default `ScriptedModel`, so the output is stable. Understand the harness first, then consider replacing it with a real model.
+These demos use **each chapter's own mock/scripted handler** by default, so the output is stable, needs zero configuration, and makes no network calls. Understand the harness first, then consider switching to a real model.
 
 ## 4. Follow through to shared modules
 
-Chapter code aims to remain “isomorphic and readable.” Shared implementation is in `src/modules`:
+Chapter code aims to remain “consistent in shape and readable.” Shared implementation is in `src/modules`:
 
 | Mechanism | Shared module |
 | --- | --- |
@@ -92,3 +94,24 @@ After reading each chapter, try answering these questions:
 3. If you plug in a real model API, do you change Agent logic or only handlers?
 
 This mindset is more important than memorizing a code snippet.
+
+## 6. Plug in a real model (optional)
+
+Each chapter's `Chat` handler goes through a single switch, `callChat()` in `runtime/model.ts`: in mock mode it calls the chapter's own mock, in real mode it calls a real model. **The `ChatEffect` definition is unchanged** — because capabilities belong to the handler while intent belongs to the generator.
+
+```sh
+cp .env.example .env        # defaults to DeepSeek's Anthropic-compatible endpoint
+# set ANTHROPIC_AUTH_TOKEN (your DeepSeek API key) in .env
+npm run s01 -- --real       # real mode for a single chapter
+npm run harness:real        # engineering harness: real model + real tools (bash/files)
+```
+
+Key points:
+
+- The default is `AGENT_MODE=mock`: zero config, no network. Only `--real` or `AGENT_MODE=real` triggers a model request.
+- If real is requested but no token is configured, it warns and falls back to mock instead of failing.
+- `.env` is git-ignored — never commit keys.
+- In a chapter's real mode the **LLM call is real, but tool handling stays with the chapter's teaching handler**; for fully real tool execution use `npm run harness:real`.
+
+See the "Real model (optional)" section in the root `README.en.md` for details.
+

@@ -9,24 +9,20 @@
  */
 
 import { runAgent } from '../runtime/core.ts';
-import type { BaseEffect, PerformFn } from '../runtime/core.ts';
-import type { Message, LLMResponse, ToolUseBlock } from '../runtime/types.ts';
+import type { Effect, PerformFn } from '../runtime/core.ts';
+import type { Message, LLMResponse, ToolResultBlock } from '../runtime/types.ts';
+import { extractText, getToolUseBlocks } from '../runtime/response.ts';
+import { callChat } from '../runtime/model.ts';
+import { schemasFor } from '../runtime/tool-schemas.ts';
+import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 
 // ============================================================
 // Part 1: Effect 类型定义
 // ============================================================
 
-interface ChatEffect extends BaseEffect {
-  type: 'Chat';
-  input: { messages: Message[] };
-  output: LLMResponse;
-}
+interface ChatEffect extends Effect<'Chat', { messages: Message[] }, LLMResponse> {}
 
-interface BashExecEffect extends BaseEffect {
-  type: 'BashExec';
-  input: { command: string };
-  output: string;
-}
+interface BashExecEffect extends Effect<'BashExec', { command: string }, string> {}
 
 // s05 新增：计划管理
 interface TodoItem {
@@ -35,17 +31,9 @@ interface TodoItem {
   activeForm: string;
 }
 
-interface TodoWriteEffect extends BaseEffect {
-  type: 'TodoWrite';
-  input: { todos: TodoItem[] };
-  output: string;
-}
+interface TodoWriteEffect extends Effect<'TodoWrite', { todos: TodoItem[] }, string> {}
 
-interface TodoReadEffect extends BaseEffect {
-  type: 'TodoRead';
-  input: Record<string, never>;
-  output: string;
-}
+interface TodoReadEffect extends Effect<'TodoRead', Record<string, never>, string> {}
 
 type S05Effect = ChatEffect | BashExecEffect | TodoWriteEffect | TodoReadEffect;
 
@@ -60,16 +48,6 @@ function formatTodos(todos: TodoItem[]): string {
   if (todos.length === 0) return '（无任务）';
   const icons = { pending: '○', in_progress: '◑', completed: '●' };
   return todos.map(t => `  ${icons[t.status]} [${t.status}] ${t.content}`).join('\n');
-}
-
-function extractText(response: LLMResponse): string {
-  return response.content
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map(b => b.text).join('');
-}
-
-function getToolUseBlocks(response: LLMResponse): ToolUseBlock[] {
-  return response.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
 }
 
 // Mock LLM：第1轮先写计划，第2-4轮执行任务，第5轮完成
@@ -189,12 +167,19 @@ function mockLLM(messages: Message[]): LLMResponse {
   };
 }
 
+// real 模式注入的 system prompt，引导模型使用工具完成任务。
+// mock 模式不读取该字段，故零配置运行行为不变。
+const SYSTEM_PROMPT = buildSystemPrompt('开始任何多步骤任务前，先用 todo_write 规划步骤，并随进度更新状态。');
+
 const s05Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const { messages } = effect.input;
     console.log(`\n[Chat] → 发送 ${messages.length} 条消息...`);
     await new Promise(r => setTimeout(r, 50));
-    const response = mockLLM(messages);
+    const response = await callChat(mockLLM, messages, {
+      tools: schemasFor('bash', 'todo_write', 'todo_read'),
+      system: SYSTEM_PROMPT,
+    });
     const tools = getToolUseBlocks(response).map(b => b.name).join(', ');
     console.log(`[LLM]  ← stop_reason: ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -241,7 +226,7 @@ function* agentLoop(perform: PerformFn<S05Effect>) {
     }
 
     const response = yield* perform({ type: 'Chat', input: { messages } });
-    messages.push({ role: 'assistant', content: extractText(response) });
+    messages.push({ role: 'assistant', content: response.content });
 
     if (response.stop_reason !== 'tool_use') {
       return extractText(response);
@@ -257,32 +242,44 @@ function* agentLoop(perform: PerformFn<S05Effect>) {
       roundsSinceTodo++;
     }
 
-    const toolResults: Array<{ tool_use_id: string; content: string }> = [];
+    const toolResults: ToolResultBlock[] = [];
 
     for (const block of blocks) {
-      let output: string;
+      try {
+        let output: string;
 
-      switch (block.name) {
-        case 'bash':
-          output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
-          break;
-        case 'todo_write':
-          output = yield* perform({
-            type: 'TodoWrite',
-            input: { todos: block.input['todos'] as TodoItem[] },
-          });
-          break;
-        case 'todo_read':
-          output = yield* perform({ type: 'TodoRead', input: {} });
-          break;
-        default:
-          output = `[未知工具] ${block.name}`;
+        switch (block.name) {
+          case 'bash':
+            output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
+            break;
+          case 'todo_write':
+            output = yield* perform({
+              type: 'TodoWrite',
+              input: { todos: block.input['todos'] as TodoItem[] },
+            });
+            break;
+          case 'todo_read':
+            output = yield* perform({ type: 'TodoRead', input: {} });
+            break;
+          default:
+            output = `[未知工具] ${block.name}`;
+        }
+
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: output });
+      } catch (err) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `[错误] ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        });
       }
-
-      toolResults.push({ tool_use_id: block.id, content: output });
     }
 
-    messages.push({ role: 'user', content: JSON.stringify(toolResults) });
+    messages.push({
+      role: 'user',
+      content: toolResults,
+    });
   }
 }
 

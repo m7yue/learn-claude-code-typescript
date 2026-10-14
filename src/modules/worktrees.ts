@@ -134,6 +134,15 @@ export class WorktreeRegistry {
   }
 }
 
+/**
+ * 注意：此工厂**未接入 harness**（不在 src/modules/harness-tools.ts 中）。
+ *
+ * 原因：其工具词汇（worktree_list/events/run/keep，参数 `name`）与章节词汇
+ * （create_worktree/remove_worktree/bind_worktree）是两套方言；且这些 handler 会真跑
+ * `git worktree` 与 shell 命令，直接暴露给真实模型有风险。
+ *
+ * tests/harness-modules.test.ts 用形状锁固定其导出键，防止无意间改名而漂移。
+ */
 export function createWorktreeTools(registry: WorktreeRegistry) {
   return {
     worktree_list: async () => registry.render(),

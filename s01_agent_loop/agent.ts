@@ -5,37 +5,37 @@
  *   Chat     — 与 LLM 对话（获取响应 + stop_reason）
  *   BashExec — 执行 bash 命令
  *
- * 核心等价关系：
- *   Python stop_reason == "tool_use"  →  Generator done === false（还有效应要处理）
- *   Python stop_reason != "tool_use"  →  Generator done === true（任务完成）
- *   Python while True                 →  runAgent() 内部驱动循环
+ * 核心对照：
+ *   模型 stop_reason == "tool_use"  →  Generator done === false（还有效应要处理）
+ *   模型 stop_reason != "tool_use"  →  Generator done === true（任务完成）
+ *   不断重复的对话轮次              →  runAgent() 内部驱动循环
  */
 
 import { runAgent } from '../runtime/core.ts';
-import type { BaseEffect, PerformFn } from '../runtime/core.ts';
-import type { Message, LLMResponse, ToolUseBlock } from '../runtime/types.ts';
+import type { Effect, PerformFn } from '../runtime/core.ts';
+import type { Message, LLMResponse, ToolResultBlock } from '../runtime/types.ts';
+import { extractText, getToolUseBlocks } from '../runtime/response.ts';
+import { callChat } from '../runtime/model.ts';
+import { schemasFor } from '../runtime/tool-schemas.ts';
+import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 
 // ============================================================
 // Part 1: Effect 类型定义
 // ============================================================
 
-interface ChatEffect extends BaseEffect {
-  type: 'Chat';
-  input: { messages: Message[] };
-  output: LLMResponse;
-}
+interface ChatEffect extends Effect<'Chat', { messages: Message[] }, LLMResponse> {}
 
-interface BashExecEffect extends BaseEffect {
-  type: 'BashExec';
-  input: { command: string };
-  output: string;
-}
+interface BashExecEffect extends Effect<'BashExec', { command: string }, string> {}
 
 type S01Effect = ChatEffect | BashExecEffect;
 
 // ============================================================
 // Part 2: Handler 实现（所有副作用在此）
 // ============================================================
+
+// 真实模式下注入 system prompt，引导模型使用工具完成任务。
+// mock 模式不读取该字段，故零配置运行行为不变。
+const SYSTEM_PROMPT = buildSystemPrompt('使用 bash 工具解决任务。直接行动，不要多解释。');
 
 // Mock LLM：用脚本模拟两轮对话
 // 第1轮：调用 bash 工具（等价于 stop_reason == "tool_use"）
@@ -68,27 +68,15 @@ function mockLLM(messages: Message[]): LLMResponse {
   };
 }
 
-// 提取 LLMResponse 中的文本内容
-function extractText(response: LLMResponse): string {
-  return response.content
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map(b => b.text)
-    .join('');
-}
-
-// 提取 LLMResponse 中的工具调用块
-function getToolUseBlocks(response: LLMResponse): ToolUseBlock[] {
-  return response.content.filter(
-    (b): b is ToolUseBlock => b.type === 'tool_use'
-  );
-}
-
 const s01Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const { messages } = effect.input;
     console.log(`[Chat] → 发送 ${messages.length} 条消息...`);
     await new Promise(r => setTimeout(r, 100)); // 模拟网络延迟
-    const response = mockLLM(messages);
+    const response = await callChat(mockLLM, messages, {
+      tools: schemasFor('bash'),
+      system: SYSTEM_PROMPT,
+    });
     console.log(`[LLM]  ← stop_reason: ${response.stop_reason}`);
     return response;
   },
@@ -114,36 +102,41 @@ function* agentLoop(perform: PerformFn<S01Effect>) {
 
   while (true) {
     // 声明：我需要和 LLM 对话
-    // 等价于 Python: response = client.messages.create(...)
     const response = yield* perform({ type: 'Chat', input: { messages } });
 
     // 将模型回答追加到对话历史
-    messages.push({ role: 'assistant', content: extractText(response) });
+    messages.push({ role: 'assistant', content: response.content });
 
     // 模型说"我做完了" → 退出
-    // 等价于 Python: if response.stop_reason != "tool_use": return
     if (response.stop_reason !== 'tool_use') {
       const finalText = extractText(response);
       return finalText;
     }
 
     // 执行所有工具调用，收集结果
-    const toolResults: Array<{ tool_use_id: string; content: string }> = [];
+    const toolResults: ToolResultBlock[] = [];
     for (const block of getToolUseBlocks(response)) {
-      // 声明：我需要执行 bash 命令
-      // 等价于 Python: output = TOOL_HANDLERS[block.name](**block.input)
-      const output = yield* perform({
-        type: 'BashExec',
-        input: { command: block.input['command'] as string },
-      });
-      toolResults.push({ tool_use_id: block.id, content: output });
+      try {
+        // 声明：我需要执行 bash 命令
+        const output = yield* perform({
+          type: 'BashExec',
+          input: { command: block.input['command'] as string },
+        });
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: output });
+      } catch (err) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `[错误] ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        });
+      }
     }
 
     // 将工具结果喂回对话
-    // 等价于 Python: messages.append({"role": "user", "content": results})
     messages.push({
       role: 'user',
-      content: JSON.stringify(toolResults),
+      content: toolResults,
     });
   }
 }

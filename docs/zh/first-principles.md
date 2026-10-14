@@ -52,14 +52,14 @@ const output = yield* perform({
 
 | 阶段 | 章节 | 第一性原理 |
 | --- | --- | --- |
-| 基础循环 | s01 Agent Loop | 模型需要工具结果回灌，才能形成行动闭环 |
+| 基础循环 | s01 Agent Loop | 模型需要工具结果送回，才能形成完整的行动循环 |
 | 工具能力 | s02 Tool Use | 工具扩展模型可触达的行动空间 |
 | 安全边界 | s03 Permission, s04 Hooks | 真实副作用必须有审批、拦截和审计 |
-| 工作记忆 | s05 TodoWrite | 长任务需要把计划外部化 |
-| 上下文管理 | s06 Subagent, s08 Compact | 探索噪声和历史结果不能无限塞进主上下文 |
+| 工作记忆 | s05 TodoWrite | 长任务需要把计划写到外部文件 |
+| 上下文管理 | s06 Subagent, s08 Compact | 探索过程中的杂乱内容和历史结果不能无限塞进主上下文 |
 | 知识与记忆 | s07 Skill, s09 Memory, s10 Prompt | 知识要按需加载，prompt 要运行时组装 |
 | 韧性 | s11 Recovery | 错误要分类处理，而不是一失败就停止 |
-| 持久控制面 | s12 Task, s13 Background, s14 Cron | 长期工作需要任务、异步和时间触发 |
+| 持久管理层 | s12 Task, s13 Background, s14 Cron | 长期工作需要任务、异步和时间触发 |
 | 多 Agent 协作 | s15 Team, s16 Protocol, s17 Autonomous | 协作需要身份、消息和显式协议 |
 | 执行隔离与扩展 | s18 Worktree, s19 MCP | 并行修改要隔离，外部能力要标准接入 |
 | 综合 | s20 Comprehensive | 机制很多，但循环仍然只有一个 |

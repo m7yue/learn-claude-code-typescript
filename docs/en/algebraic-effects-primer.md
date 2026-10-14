@@ -14,7 +14,7 @@ If an Agent wants to run a shell command, the most direct code is:
 const output = await exec(command);
 ```
 
-The problem with this line is: Agent logic is tightly coupled with the actual side effect. If you later want to add permission checks, logging, mocking, sandboxing, or retries, you have to change around this line.
+The problem with this line is: Agent logic is mixed in with the actual side effect. If you later want to add permission checks, logging, mocking, sandboxing, or retries, you have to change around this line.
 
 ## Now look at the effect-based way
 

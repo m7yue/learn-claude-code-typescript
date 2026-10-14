@@ -6,13 +6,13 @@
 
 ## 第一性原理
 
-**问题的本质**：s03 的权限检查是"一种横切关注点"。
+**问题的本质**：s03 的权限检查是"一种到处都要用到的公共逻辑"。
 
-s03 里，权限检查通过 `checkPermissionPipeline()` 写在 Agent Generator 里。但权限不是业务逻辑——它和"读文件、写文件、调用 LLM"等业务操作是**不同维度**的关注点。
+s03 里，权限检查通过 `checkPermissionPipeline()` 写在 Agent Generator 里。但权限不是业务逻辑——它和"读文件、写文件、调用 LLM"等业务操作不是**同一类**东西。
 
-如果权限检查写在 Generator 里，那日志记录、监控、缓存、审计呢？每加一种横切关注点，Generator 就膨胀一次。
+如果权限检查写在 Generator 里，那日志记录、监控、缓存、审计呢？每加一种这样的公共逻辑，Generator 就膨胀一次。
 
-**解法**：把横切关注点提升为 `FireHook` Effect，让 Handler 在不同生命周期节点注入逻辑。Generator 只描述业务流程，Hook 系统负责横切。
+**解法**：把这类公共逻辑提升为 `FireHook` Effect，让 Handler 在不同生命周期节点注入逻辑。Generator 只描述业务流程，Hook 系统负责这些公共逻辑。
 
 ---
 
@@ -37,14 +37,14 @@ if (!perm.allowed) { ... }
 引入 `FireHook` Effect：
 
 ```typescript
-interface FireHookEffect extends BaseEffect {
-  type: 'FireHook';
-  input: {
+interface FireHookEffect extends Effect<
+  'FireHook',
+  {
     event: 'PreToolUse' | 'PostToolUse' | 'UserPromptSubmit' | 'Stop';
     data: Record<string, unknown>;
-  };
-  output: { blocked: boolean; reason?: string };
-}
+  },
+  { blocked: boolean; reason?: string }
+> {}
 ```
 
 **Hook 系统 = Effect 拦截器**：
@@ -68,7 +68,7 @@ interface FireHookEffect extends BaseEffect {
 // 权限 Hook — 在 PreToolUse 运行
 function permissionHook(toolName: string, args: Record<string, unknown>) {
   if (DENY_LIST.some(d => String(args.command ?? '').includes(d))) {
-    return { blocked: true, reason: '命令在硬否列表中' };
+    return { blocked: true, reason: '命令在禁止清单中' };
   }
   return { blocked: false };
 }
@@ -156,18 +156,28 @@ npm run s04
 ```
 [S04] Hooks 启动
 
-[Hook:UserPromptSubmit] 注入时间上下文
+[Hook:UserPromptSubmit] 注入上下文: 当前时间 <HH:MM:SS>
+
 [Chat] → 发送 1 条消息...
 [LLM]  ← stop_reason: tool_use, 工具: bash
-[Hook:PreToolUse] 权限检查: bash
-[Hook:PreToolUse] 日志: 即将执行 bash
+[Hook:Permission] ✓ 允许执行 bash
+[Hook:Log] 即将执行 bash
 [BashExec] → ls -la
-[Hook:PostToolUse] 输出长度: 42 字符（正常）
-...
+[Hook:PostToolUse] bash 输出 14 字符
+
+[Chat] → 发送 3 条消息...
+[LLM]  ← stop_reason: tool_use, 工具: bash
+[Hook:Permission] ✗ 拒绝 bash: 命中禁止清单 "rm -rf /"
+
+[Chat] → 发送 5 条消息...
+[LLM]  ← stop_reason: end_turn
+
+[Hook:Stop] 循环结束，共 3 轮
+[S04] 完成: 操作完成，部分命令被 Hook 拦截。
 ```
 
 ---
 
 ## 本章小结
 
-**FireHook Effect 是"效应的效应"——它在其他效应被处理前后插入横切逻辑，让权限、日志、监控与业务逻辑彻底解耦。Generator 只描述顺序，Hook 系统负责横切。**
+**FireHook Effect 是"效应的效应"——它在其他效应被处理前后插入这类公共逻辑，让权限、日志、监控与业务逻辑彻底分开。Generator 只描述顺序，Hook 系统负责这些公共逻辑。**

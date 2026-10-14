@@ -88,18 +88,18 @@ await runAgent(agentLoop, handlers);
 
 ```typescript
 // 效应1：与 LLM 对话
-interface ChatEffect extends BaseEffect {
-  type: 'Chat';
-  input: { messages: Message[] };
-  output: LLMResponse;    // 返回完整响应（含 stop_reason 和工具调用）
-}
+interface ChatEffect extends Effect<
+  'Chat',
+  { messages: Message[] },
+  LLMResponse    // 返回完整响应（含 stop_reason 和工具调用）
+> {}
 
 // 效应2：执行 bash 命令
-interface BashExecEffect extends BaseEffect {
-  type: 'BashExec';
-  input: { command: string };
-  output: string;          // 命令输出
-}
+interface BashExecEffect extends Effect<
+  'BashExec',
+  { command: string },
+  string          // 命令输出
+> {}
 ```
 
 ### Agent 业务逻辑
@@ -109,7 +109,8 @@ function* agentLoop(perform: PerformFn<S01Effect>) {
   while (true) {
     // 声明：与 LLM 对话
     const response = yield* perform({ type: 'Chat', input: { messages } });
-    messages.push({ role: 'assistant', content: extractText(response) });
+    // 保留完整内容块（含 tool_use），real 模式才能与后续 tool_result 配对
+    messages.push({ role: 'assistant', content: response.content });
 
     // LLM 说"我做完了" → 退出（等价于 stop_reason != "tool_use"）
     if (response.stop_reason !== 'tool_use') return;
@@ -121,8 +122,11 @@ function* agentLoop(perform: PerformFn<S01Effect>) {
       toolResults.push({ tool_use_id: block.id, content: output });
     }
 
-    // 将结果喂回对话
-    messages.push({ role: 'user', content: JSON.stringify(toolResults) });
+    // 将结果喂回对话（结构化 tool_result 块，而非 JSON 字符串）
+    messages.push({
+      role: 'user',
+      content: toolResults.map((r) => ({ type: 'tool_result', tool_use_id: r.tool_use_id, content: r.content })),
+    });
   }
 }
 ```
@@ -189,14 +193,19 @@ npm run s01
 输出示例：
 ```
 [S01] Agent Loop 启动
+
 [Chat] → 发送 1 条消息...
 [LLM]  ← stop_reason: tool_use
-[BashExec] → ls -la
-[BashExec] ← (文件列表)
+[BashExec] → echo "file1.ts\nfile2.ts\nREADME.md"
+[BashExec] ← file1.ts\nfile2.ts\nREADME.md
 [Chat] → 发送 3 条消息...
 [LLM]  ← stop_reason: end_turn
-[S01] 完成：total 8 ... README.md ...
+
+[S01] 完成: 当前目录包含：file1.ts, file2.ts, README.md
 ```
+
+> 说明：本章的 `BashExec` handler 只做模拟，不真正启动新进程，因此返回的是提前写好的文件列表。
+> 截图中 `\n` 在实际终端里会逐行换行显示。若要执行真实命令，见根 README 的 real 模式。
 
 ---
 

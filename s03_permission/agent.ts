@@ -4,15 +4,19 @@
  * 本章新增 1 个 Effect：
  *   RequestPermission — 向用户或规则引擎请求执行许可
  *
- * 三道闸门（全在 Handler 内部，Generator 零感知）：
- *   Gate 1: DenyList  — 硬否列表，无条件拒绝
- *   Gate 2: Rules     — 规则匹配，条件拒绝或升级到 Gate 3
- *   Gate 3: UserApproval — 用户审批（RequestPermission Effect）
+ * 三道检查关（都在 Handler 内部完成，Generator 完全不需要知道）：
+ *   Gate 1: DenyList  — 禁止清单，命中就无条件拒绝
+ *   Gate 2: Rules     — 按规则匹配，命中就拒绝，或交给 Gate 3 处理
+ *   Gate 3: UserApproval — 请用户审批（RequestPermission Effect）
  */
 
 import { runAgent } from '../runtime/core.ts';
-import type { BaseEffect, PerformFn } from '../runtime/core.ts';
-import type { Message, LLMResponse, ToolUseBlock } from '../runtime/types.ts';
+import type { Effect, PerformFn } from '../runtime/core.ts';
+import type { Message, LLMResponse, ToolResultBlock } from '../runtime/types.ts';
+import { extractText, getToolUseBlocks } from '../runtime/response.ts';
+import { callChat } from '../runtime/model.ts';
+import { schemasFor } from '../runtime/tool-schemas.ts';
+import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 
@@ -21,40 +25,16 @@ import * as fs from 'node:fs';
 // ============================================================
 
 // 继承自 s01/s02
-interface ChatEffect extends BaseEffect {
-  type: 'Chat';
-  input: { messages: Message[] };
-  output: LLMResponse;
-}
+interface ChatEffect extends Effect<'Chat', { messages: Message[] }, LLMResponse> {}
 
-interface BashExecEffect extends BaseEffect {
-  type: 'BashExec';
-  input: { command: string };
-  output: string;
-}
+interface BashExecEffect extends Effect<'BashExec', { command: string }, string> {}
 
-interface ReadFileEffect extends BaseEffect {
-  type: 'ReadFile';
-  input: { path: string; limit?: number };
-  output: string;
-}
+interface ReadFileEffect extends Effect<'ReadFile', { path: string; limit?: number }, string> {}
 
-interface WriteFileEffect extends BaseEffect {
-  type: 'WriteFile';
-  input: { path: string; content: string };
-  output: string;
-}
+interface WriteFileEffect extends Effect<'WriteFile', { path: string; content: string }, string> {}
 
 // s03 新增：权限请求
-interface RequestPermissionEffect extends BaseEffect {
-  type: 'RequestPermission';
-  input: {
-    toolName: string;
-    args: Record<string, unknown>;
-    reason: string;
-  };
-  output: { allowed: boolean; reason?: string };
-}
+interface RequestPermissionEffect extends Effect<'RequestPermission', { toolName: string; args: Record<string, unknown>; reason: string }, { allowed: boolean; reason?: string }> {}
 
 type S03Effect =
   | ChatEffect
@@ -69,7 +49,7 @@ type S03Effect =
 
 const WORKDIR = process.cwd();
 
-// Gate 1：硬否列表，任何命令包含以下内容直接拒绝
+// Gate 1：禁止清单，命令里只要包含其中一项就直接拒绝
 const DENY_LIST = [
   'rm -rf /',
   'rm -rf ~',
@@ -97,27 +77,24 @@ const PERMISSION_RULES: PermissionRule[] = [
     autoReject: false,
   },
   {
-    match: (tool, args) =>
-      (tool === 'WriteFile') && !path.resolve(String(args['path'] ?? '')).startsWith(WORKDIR),
+    // 用相对路径判断是否越界：`/工作区-xxx` 这类同前缀兄弟目录也会被判为「工作区外」。
+    match: (tool, args) => {
+      if (tool !== 'WriteFile') return false;
+      const resolved = path.resolve(WORKDIR, String(args['path'] ?? ''));
+      const rel = path.relative(WORKDIR, resolved);
+      return rel.startsWith('..') || path.isAbsolute(rel);
+    },
     reason: '写入工作区外的路径',
     autoReject: false,
   },
 ];
 
+/** 安全路径校验：把参数解析为工作区内的绝对路径，越界（含同前缀兄弟目录）即抛错。 */
 function safePath(p: string): string {
   const resolved = path.resolve(WORKDIR, p);
-  if (!resolved.startsWith(WORKDIR)) throw new Error(`路径越界: ${p}`);
+  const rel = path.relative(WORKDIR, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error(`路径越界: ${p}`);
   return resolved;
-}
-
-function extractText(response: LLMResponse): string {
-  return response.content
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map(b => b.text).join('');
-}
-
-function getToolUseBlocks(response: LLMResponse): ToolUseBlock[] {
-  return response.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
 }
 
 // Mock LLM：先发危险命令，再发安全命令
@@ -147,9 +124,8 @@ function mockLLM(messages: Message[]): LLMResponse {
   };
 }
 
-// 检查权限管道（三道闸门）
-// 注意：这个函数需要 perform 才能发起 RequestPermission Effect
-// 所以它是一个 Generator 函数
+// 权限检查流程（依次过三道检查关）
+// 注意：这个函数需要 perform 才能发起 RequestPermission Effect，所以它是一个 Generator 函数
 function* checkPermissionPipeline(
   toolName: string,
   args: Record<string, unknown>,
@@ -160,11 +136,11 @@ function* checkPermissionPipeline(
     const command = String(args['command'] ?? '');
     const denied = DENY_LIST.find(d => command.includes(d));
     if (denied) {
-      console.log(`[Gate1] ✗ 命中硬否列表: ${denied}`);
-      return { allowed: false, reason: `命令在硬否列表中: "${denied}"` };
+      console.log(`[Gate1] ✗ 命中禁止清单: ${denied}`);
+      return { allowed: false, reason: `命令在禁止清单中: "${denied}"` };
     }
   }
-  console.log(`[Gate1] ✓ 通过硬否列表`);
+  console.log(`[Gate1] ✓ 未命中禁止清单`);
 
   // Gate 2: Rules
   const rule = PERMISSION_RULES.find(r => r.match(toolName, args));
@@ -180,16 +156,23 @@ function* checkPermissionPipeline(
     });
     return result;
   }
-  console.log(`[Gate2] ✓ 无规则命中，直接放行`);
+  console.log(`[Gate2] ✓ 无规则命中，直接允许执行`);
   return { allowed: true };
 }
+
+// real 模式注入的 system prompt，引导模型使用工具完成任务。
+// mock 模式不读取该字段，故零配置运行行为不变。
+const SYSTEM_PROMPT = buildSystemPrompt('使用 bash、read_file、write_file 工具解决任务。所有破坏性操作都需要用户批准。');
 
 const s03Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const { messages } = effect.input;
     console.log(`\n[Chat] → 发送 ${messages.length} 条消息...`);
     await new Promise(r => setTimeout(r, 50));
-    const response = mockLLM(messages);
+    const response = await callChat(mockLLM, messages, {
+      tools: schemasFor('bash', 'read_file', 'write_file'),
+      system: SYSTEM_PROMPT,
+    });
     const tools = getToolUseBlocks(response).map(b => b.name).join(', ');
     console.log(`[LLM]  ← stop_reason: ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -245,50 +228,62 @@ function* agentLoop(perform: PerformFn<S03Effect>) {
 
   while (true) {
     const response = yield* perform({ type: 'Chat', input: { messages } });
-    messages.push({ role: 'assistant', content: extractText(response) });
+    messages.push({ role: 'assistant', content: response.content });
 
     if (response.stop_reason !== 'tool_use') {
       return extractText(response);
     }
 
-    const toolResults: Array<{ tool_use_id: string; content: string }> = [];
+    const toolResults: ToolResultBlock[] = [];
 
     for (const block of getToolUseBlocks(response)) {
-      // 权限检查：在 yield Effect 之前，先走三道闸门
-      // 注意：checkPermissionPipeline 本身是 Generator，可以在内部 yield RequestPermission
-      const perm = yield* checkPermissionPipeline(
-        block.name === 'bash' ? 'BashExec' : block.name,
-        block.input as Record<string, unknown>,
-        perform
-      );
+      try {
+        // 权限检查：在 yield Effect 之前，先走三道闸门
+        // 注意：checkPermissionPipeline 本身是 Generator，可以在内部 yield RequestPermission
+        const perm = yield* checkPermissionPipeline(
+          block.name === 'bash' ? 'BashExec' : block.name,
+          block.input as Record<string, unknown>,
+          perform
+        );
 
-      let output: string;
-      if (!perm.allowed) {
-        output = `[拒绝] ${perm.reason}`;
-        console.log(`[拒绝] ${block.name}: ${perm.reason}`);
-      } else {
-        switch (block.name) {
-          case 'bash':
-            output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
-            break;
-          case 'read_file':
-            output = yield* perform({ type: 'ReadFile', input: { path: block.input['path'] as string } });
-            break;
-          case 'write_file':
-            output = yield* perform({
-              type: 'WriteFile',
-              input: { path: block.input['path'] as string, content: block.input['content'] as string },
-            });
-            break;
-          default:
-            output = `[未知工具] ${block.name}`;
+        let output: string;
+        if (!perm.allowed) {
+          output = `[拒绝] ${perm.reason}`;
+          console.log(`[拒绝] ${block.name}: ${perm.reason}`);
+        } else {
+          switch (block.name) {
+            case 'bash':
+              output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
+              break;
+            case 'read_file':
+              output = yield* perform({ type: 'ReadFile', input: { path: block.input['path'] as string } });
+              break;
+            case 'write_file':
+              output = yield* perform({
+                type: 'WriteFile',
+                input: { path: block.input['path'] as string, content: block.input['content'] as string },
+              });
+              break;
+            default:
+              output = `[未知工具] ${block.name}`;
+          }
         }
-      }
 
-      toolResults.push({ tool_use_id: block.id, content: output });
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: output });
+      } catch (err) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `[错误] ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        });
+      }
     }
 
-    messages.push({ role: 'user', content: JSON.stringify(toolResults) });
+    messages.push({
+      role: 'user',
+      content: toolResults,
+    });
   }
 }
 

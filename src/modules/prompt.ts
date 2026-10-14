@@ -1,3 +1,5 @@
+import { ENVIRONMENT_PROMPT, WORKDIR } from "../../runtime/system-prompt.ts";
+
 export interface PromptSection {
   id: string;
   content: string;
@@ -37,11 +39,12 @@ export class SystemPromptAssembler {
 
 export function createDefaultPromptAssembler(): SystemPromptAssembler {
   const assembler = new SystemPromptAssembler();
-  assembler.add({ id: "identity", content: "你是一个 coding agent。模型负责决策，harness 负责执行。" });
-  assembler.add({ id: "workspace", content: "所有文件操作默认限制在当前工作区。" });
+  assembler.add({ id: "identity", content: "你是一个编码助手。模型负责决策，harness 负责执行。直接行动，不要多解释。" });
+  assembler.add({ id: "environment", content: `运行环境：${ENVIRONMENT_PROMPT}。` });
+  assembler.add({ id: "workspace", content: `工作目录：${WORKDIR}；所有文件操作默认限制在工作区内。` });
   assembler.add({
     id: "todo-nudge",
-    content: "如果任务超过两步，先使用 TodoWrite 明确计划。",
+    content: "如果任务超过两步，先使用 todo_write 明确计划。",
     enabledWhen: (context) => context.hasOpenTodos !== false,
   });
   assembler.add({

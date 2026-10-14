@@ -11,15 +11,15 @@ function parseTaskStatus(value: unknown): TaskStatus | undefined {
 
 export function createTaskTools(board: TaskBoard) {
   return {
-    task_create: async (args: Record<string, unknown>) => {
+    create_task: async (args: Record<string, unknown>) => {
       const task = await board.create(String(args.subject ?? ""), String(args.description ?? ""));
       return JSON.stringify(task, null, 2);
     },
-    task_list: async () => board.render(),
-    task_get: async (args: Record<string, unknown>) => {
+    list_tasks: async () => board.render(),
+    get_task: async (args: Record<string, unknown>) => {
       return JSON.stringify(await board.get(Number(args.id)), null, 2);
     },
-    task_update: async (args: Record<string, unknown>) => {
+    update_task: async (args: Record<string, unknown>) => {
       const task = await board.update(Number(args.id), {
         status: parseTaskStatus(args.status),
         owner: args.owner === undefined ? undefined : String(args.owner),

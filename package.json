@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.12"
   },
   "scripts": {
     "s01": "tsx s01_agent_loop/agent.ts",
@@ -26,12 +26,18 @@
     "s18": "tsx s18_worktree_isolation/agent.ts",
     "s19": "tsx s19_mcp_plugin/agent.ts",
     "s20": "tsx s20_comprehensive/agent.ts",
+    "harness": "tsx src/harness.ts",
+    "harness:real": "tsx src/harness.ts --real",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:e2e": "node --import tsx --test tests/chapters.e2e.ts"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
     "tsx": "^4.22.3",
     "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0"
   }
 }

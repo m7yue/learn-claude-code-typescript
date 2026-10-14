@@ -13,3 +13,12 @@ dist/
 # Generated output
 coverage/
 *.js.map
+
+# Chapter runtime state (对齐 Python 参考实现的工作区持久化布局)
+.tasks/
+.memory/
+.transcripts/
+.task_outputs/
+.mailboxes/
+.worktrees/
+.scheduled_tasks.json

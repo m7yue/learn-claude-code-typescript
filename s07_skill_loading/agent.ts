@@ -11,8 +11,12 @@
  */
 
 import { runAgent } from '../runtime/core.ts';
-import type { BaseEffect, PerformFn } from '../runtime/core.ts';
-import type { Message, LLMResponse, ToolUseBlock } from '../runtime/types.ts';
+import type { Effect, PerformFn } from '../runtime/core.ts';
+import type { Message, LLMResponse, ToolResultBlock } from '../runtime/types.ts';
+import { extractText, getToolUseBlocks } from '../runtime/response.ts';
+import { callChat } from '../runtime/model.ts';
+import { schemasFor } from '../runtime/tool-schemas.ts';
+import { baseSystemPrompt } from '../runtime/system-prompt.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,30 +25,14 @@ import { fileURLToPath } from 'node:url';
 // Part 1: Effect 类型定义
 // ============================================================
 
-interface ChatEffect extends BaseEffect {
-  type: 'Chat';
-  input: { messages: Message[]; systemPrompt?: string };
-  output: LLMResponse;
-}
+interface ChatEffect extends Effect<'Chat', { messages: Message[]; systemPrompt?: string }, LLMResponse> {}
 
-interface BashExecEffect extends BaseEffect {
-  type: 'BashExec';
-  input: { command: string };
-  output: string;
-}
+interface BashExecEffect extends Effect<'BashExec', { command: string }, string> {}
 
 // s07 新增：技能管理
-interface ListSkillsEffect extends BaseEffect {
-  type: 'ListSkills';
-  input: Record<string, never>;
-  output: Array<{ name: string; description: string }>;
-}
+interface ListSkillsEffect extends Effect<'ListSkills', Record<string, never>, Array<{ name: string; description: string }>> {}
 
-interface LoadSkillEffect extends BaseEffect {
-  type: 'LoadSkill';
-  input: { name: string };
-  output: string; // 技能的完整 Markdown 内容
-}
+interface LoadSkillEffect extends Effect<'LoadSkill', { name: string }, string> {} // 技能的完整 Markdown 内容
 
 type S07Effect = ChatEffect | BashExecEffect | ListSkillsEffect | LoadSkillEffect;
 
@@ -53,6 +41,7 @@ type S07Effect = ChatEffect | BashExecEffect | ListSkillsEffect | LoadSkillEffec
 // ============================================================
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/** 技能目录：每个技能一个子目录，内含 SKILL.md（与本文件同级）。 */
 const SKILLS_DIR = path.join(__dirname, 'skills');
 
 // 解析 SKILL.md 的 YAML frontmatter（正则提取，避免引入额外依赖）
@@ -81,16 +70,6 @@ const SKILL_REGISTRY_FALLBACK: Record<string, { description: string; content: st
     content: '# Code Review Skill\n\n（降级模式，请创建 skills/ 目录）',
   },
 };
-
-function extractText(response: LLMResponse): string {
-  return response.content
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map(b => b.text).join('');
-}
-
-function getToolUseBlocks(response: LLMResponse): ToolUseBlock[] {
-  return response.content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
-}
 
 function mockLLM(messages: Message[], skillDir: string): LLMResponse {
   const round = messages.filter(m => m.role === 'assistant').length;
@@ -140,7 +119,7 @@ const s07Handlers = {
       console.log(`[System] 包含技能目录 (${systemPrompt.length} 字符)`);
     }
     await new Promise(r => setTimeout(r, 50));
-    const response = mockLLM(messages, systemPrompt ?? '');
+    const response = await callChat((m) => mockLLM(m, systemPrompt ?? ''), messages, { tools: schemasFor('bash', 'list_skills', 'load_skill'), system: systemPrompt });
     const tools = getToolUseBlocks(response).map(b => b.name).join(', ');
     console.log(`[LLM]  ← ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -204,12 +183,10 @@ function* agentLoop(perform: PerformFn<S07Effect>) {
     .map(s => `- ${s.name}: ${s.description}`)
     .join('\n');
 
-  const systemPrompt = `你是一个编码助手。
-
-可用技能（使用 load_skill 加载完整内容）：
-${skillDirectory}
-
-在执行专业任务前，先加载相关技能获取具体指导。`;
+  const systemPrompt =
+    baseSystemPrompt() +
+    '\n\n' +
+    `可用技能：\n${skillDirectory}\n\n当某个技能适用时，用 load_skill 读取完整说明。`;
 
   const messages: Message[] = [
     { role: 'user', content: '帮我做一次代码审查，重点检查安全问题。' },
@@ -217,36 +194,48 @@ ${skillDirectory}
 
   while (true) {
     const response = yield* perform({ type: 'Chat', input: { messages, systemPrompt } });
-    messages.push({ role: 'assistant', content: extractText(response) });
+    messages.push({ role: 'assistant', content: response.content });
 
     if (response.stop_reason !== 'tool_use') {
       return extractText(response);
     }
 
-    const toolResults: Array<{ tool_use_id: string; content: string }> = [];
+    const toolResults: ToolResultBlock[] = [];
 
     for (const block of getToolUseBlocks(response)) {
-      let output: string;
-      switch (block.name) {
-        case 'bash':
-          output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
-          break;
-        case 'list_skills':
-          // Layer 1：获取技能目录（轻量）
-          const list = yield* perform({ type: 'ListSkills', input: {} });
-          output = list.map(s => `${s.name}: ${s.description}`).join('\n');
-          break;
-        case 'load_skill':
-          // Layer 2：加载完整技能内容（按需）
-          output = yield* perform({ type: 'LoadSkill', input: { name: block.input['name'] as string } });
-          break;
-        default:
-          output = `[未知工具] ${block.name}`;
+      try {
+        let output: string;
+        switch (block.name) {
+          case 'bash':
+            output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
+            break;
+          case 'list_skills':
+            // Layer 1：获取技能目录（轻量）
+            const list = yield* perform({ type: 'ListSkills', input: {} });
+            output = list.map(s => `${s.name}: ${s.description}`).join('\n');
+            break;
+          case 'load_skill':
+            // Layer 2：加载完整技能内容（按需）
+            output = yield* perform({ type: 'LoadSkill', input: { name: block.input['name'] as string } });
+            break;
+          default:
+            output = `[未知工具] ${block.name}`;
+        }
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: output });
+      } catch (err) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `[错误] ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        });
       }
-      toolResults.push({ tool_use_id: block.id, content: output });
     }
 
-    messages.push({ role: 'user', content: JSON.stringify(toolResults) });
+    messages.push({
+      role: 'user',
+      content: toolResults,
+    });
   }
 }
 

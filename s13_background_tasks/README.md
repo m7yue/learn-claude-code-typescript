@@ -1,4 +1,4 @@
-# s13: Background Tasks — 后台任务是异步效应的并发容器
+# s13: Background Tasks — 后台任务是脱离主循环的异步执行
 
 [s12](../s12_task_system/) → [s13] → [s14](../s14_cron_scheduler/)
 
@@ -6,9 +6,12 @@
 
 ## 第一性原理
 
-**问题的本质**：有些工作需要很长时间（构建、lint、测试），但主 Agent 不应因此阻塞。让 LLM 傻等 = 资源浪费 + 上下文窗口浪费。
+**问题的本质**：有些工作需要很长时间（构建、安装、测试），但主 Agent 不应因此阻塞。让 LLM 傻等 = 资源浪费 + 上下文窗口浪费。
 
-核心需求：**主 Agent 继续执行前台工作，后台任务异步运行，完成时自动通知——不依赖 LLM 主动查询。**
+核心需求：**主 Agent 继续执行前台工作，后台任务真正脱离主循环异步运行，完成后自动通知——不依赖 LLM 主动查询。**
+
+这里的关键词是"真正脱离"：不是用一个 `await` 把耗时工作包起来假装异步，而是像 Python 的
+`threading.Thread(daemon=True)` 那样，把工作**交出去后立刻返回**，结果稍后再由注册表收集回来。
 
 ---
 
@@ -16,101 +19,166 @@
 
 ```typescript
 // 没有后台任务时，必须等待每个操作完成
-const buildResult = yield* perform({ type: 'BashExec', input: { command: 'npm run build' } });
+const buildResult = yield* perform({ type: 'ExecuteTool', input: { block: buildBlock } });
 // 等了30秒...主 Agent 完全阻塞
-const lintResult = yield* perform({ type: 'BashExec', input: { command: 'eslint src/' } });
+const lintResult = yield* perform({ type: 'ExecuteTool', input: { block: lintBlock } });
 // 又等了15秒...
+```
+
+---
+
+## 真实机制：BackgroundRegistry
+
+Python 用模块级的三样东西实现后台执行：
+
+```python
+_bg_counter = 0
+background_tasks: dict[str, dict] = {}   # bg_id → {tool_use_id, command, status}
+background_results: dict[str, str] = {}   # bg_id → output
+background_lock = threading.Lock()
+```
+
+TypeScript 用 `runtime/locks.ts` 的 `Mutex` 把它们封进 `BackgroundRegistry`：
+
+```typescript
+class BackgroundRegistry {
+  private readonly lock = new Mutex();                 // 对应 background_lock
+  private counter = 0;                                 // 对应 _bg_counter
+  private readonly backgroundTasks = new Map<string, BackgroundTaskRecord>();
+  private readonly backgroundResults = new Map<string, string>();
+
+  async startBackgroundTask(block: ToolUseBlock): Promise<string> {
+    this.counter += 1;
+    const bgId = `bg_${String(this.counter).padStart(4, '0')}`;   // bg_0001, bg_0002 ...
+    await this.lock.withLock(() => {
+      this.backgroundTasks.set(bgId, { toolUseId: block.id, command, status: 'running' });
+    });
+
+    // 不等它：主循环拿到 bgId 后立刻继续，后台这段代码稍后自己把结果写回。
+    (async () => {
+      const result = await executeTool(block);
+      await this.lock.withLock(() => {
+        this.backgroundTasks.get(bgId)!.status = 'completed';
+        this.backgroundResults.set(bgId, result);
+      });
+    })().catch(...);
+
+    return bgId;   // 立即返回
+  }
+}
+```
+
+`(async () => { ... })()` 不被 `await` 接管，对应 `Thread(daemon=True).start()`：调用方拿到
+`bg_0001` 后主循环马上继续，后台那段代码稍后才把结果写回注册表（加锁保证同一时刻只有一个操作在改表）。
+
+### 收集：`<task_notification>` 通知
+
+`collectBackgroundResults()` 取出所有 `status === 'completed'` 的任务（取出后从注册表里删掉），
+生成 XML 格式的通知（`summary` 取输出的前 200 字符，`duration_ms` 为后台任务实际耗时）：
+
+```typescript
+<task_notification>
+  <task_id>bg_0001</task_id>
+  <status>completed</status>
+  <command>npm install</command>
+  <duration_ms>27</duration_ms>
+  <summary>(执行: npm install)</summary>
+</task_notification>
+```
+
+### 判定：模型明确要求优先，否则按关键字猜测
+
+```typescript
+function shouldRunBackground(toolName, toolInput): boolean {
+  if (toolInput['run_in_background']) return true;      // 模型明确要求（优先）
+  return isSlowOperation(toolName, toolInput);          // 否则看它是不是慢命令
+}
+// isSlowOperation 命中关键词：install / build / test / deploy / compile /
+// docker build / pip install / npm install / cargo build / pytest / make
 ```
 
 ---
 
 ## 代数效应视角
 
-三个 Effect 构建完整的后台任务生命周期：
+后台机制依然是 Effect + handler + generator：
 
 ```typescript
-// 1. 声明"启动后台任务"（立即返回，不阻塞）
-const { taskId } = yield* perform({
-  type: 'SpawnBackground',
-  input: { taskId: 'bg_scan', description: '扫描代码库', durationMs: 5000 }
-});
+// 1. 前台：主循环等待工具结果
+const out = yield* perform({ type: 'ExecuteTool', input: { block } });
 
-// 2. 主 Agent 继续执行前台工作（两者并行）
-const result = yield* perform({ type: 'BashExec', input: { command: 'echo "前台继续"' } });
+// 2. 后台：交给注册表，立刻拿到 bg id（不等它）
+const { bgId } = yield* perform({ type: 'StartBackground', input: { block } });
 
-// 3. 等待特定任务完成（需要结果时才阻塞）
-const { result: scanResult } = yield* perform({ type: 'WaitBackground', input: { taskId: 'bg_scan' } });
+// 3. 收集：每轮工具执行完后，取回已经完成的通知（不等未完成的）
+const notifs = yield* perform({ type: 'CollectBackgroundResults', input: {} });
 ```
-
-**关键洞见**：通知注入不依赖 LLM 主动调用工具。Agent Loop 在每轮 `Chat` 前自动检查 `notificationQueue`，有通知则前置注入 `<task_notification>` 消息——LLM 在每轮开始时就已知道后台任务状态。
 
 | Python threading | 代数效应 TypeScript |
 |-----------------|-------------------|
-| `threading.Thread(target=task).start()` | `SpawnBackground` Effect |
-| `notification_queue.put(result)` | Handler 内 `setTimeout` 写入 `notificationQueue` |
-| Loop 前自动 `queue.get(block=False)` | Generator 主循环的自动注入逻辑 |
-| `thread.join()` | `WaitBackground` Effect |
-| `is_slow_operation(cmd)` 启发式 | `isSlowOperation(command)` 关键词检测 |
+| `client.messages.create(...)` | `Chat` Effect（mock 只替换这里） |
+| `execute_tool(block)`（前台） | `ExecuteTool` Effect |
+| `start_background_task(block)` | `StartBackground` Effect |
+| `threading.Thread(daemon=True).start()` | Handler 内不 `await` 的 async 函数 |
+| `background_lock` | `new Mutex()` |
+| `collect_background_results()` | `CollectBackgroundResults` Effect |
+| `bg_%04d` 命名 | `bg_${String(n).padStart(4, '0')}` |
+| `should_run_background()` | `shouldRunBackground()` |
 
 ---
 
 ## 工作原理
 
-### 通知自动注入：Loop 前置，不依赖工具调用
+### Agent Loop：bash 命中后台条件 → 占位结果
 
 ```typescript
-// 对应 CC 源码 Agent Loop 的 pendingToolUseSummary 注入逻辑
-while (true) {
-  // 每轮 Chat 前自动检查
-  if (notificationQueue.length > 0) {
-    const pending = [...notificationQueue];
-    notificationQueue.length = 0;
-    const notifText = pending.map(n =>
-      `<task_notification>\n任务 ${n.taskId} ${n.event}: ${n.result}\n</task_notification>`
-    ).join('\n');
-    messages.push({ role: 'user', content: notifText });
+for (const block of getToolUseBlocks(response)) {
+  if (shouldRunBackground(block.name, block.input)) {
+    const { bgId } = yield* perform({ type: 'StartBackground', input: { block } });
+    toolResults.push({
+      type: 'tool_result', tool_use_id: block.id,
+      content: `[Background task ${bgId} started] Command: ${block.input.command}. ` +
+               `Result will be available when complete.`,
+    });
+  } else {
+    const output = yield* perform({ type: 'ExecuteTool', input: { block } });
+    toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: output });
   }
-  const response = yield* perform({ type: 'Chat', input: { messages } });
-  // ...
 }
 ```
 
-LLM 在每轮开始前就能看到后台任务的完成状态，无需等待下一轮工具调用。
+注意：本章**没有** `spawn_background` / `wait_background` / `collect_notifications`
+这三个工具——后台执行完全由 `bash` 的 `run_in_background` 参数（或按关键字判断是不是慢命令）触发。
 
-### isSlowOperation：启发式后台化
+### 通知合并进同一条 user 消息
+
+工具执行完后，把通知和 tool_result 合并进**同一条** user 消息：
 
 ```typescript
-// 对应 CC 源码的慢操作检测：识别需要自动后台化的命令
-function isSlowOperation(command: string): boolean {
-  const slowKeywords = ['install', 'build', 'test', 'compile', 'lint', 'typecheck', 'tsc', 'webpack', 'vite'];
-  return slowKeywords.some(kw => command.toLowerCase().includes(kw));
-}
-
-// BashExec Handler：命中关键词则自动后台化，立即返回任务句柄
-if (isSlowOperation(command)) {
-  const taskId = `bg_auto_${Date.now()}`;
-  const promise = new Promise(resolve => setTimeout(() => {
-    notificationQueue.push({ taskId, event: 'completed', result: `${command} 完成` });
-    resolve(result);
-  }, durationMs));
-  backgroundTasks.set(taskId, promise);
-  return `已后台化 (${taskId})，主 Agent 可继续工作`;
-}
+const userContent: Array<TextBlock | ToolResultBlock> = [...toolResults];
+const notifications = yield* perform({ type: 'CollectBackgroundResults', input: {} });
+for (const notif of notifications) userContent.push({ type: 'text', text: notif });
+messages.push({ role: 'user', content: userContent });
 ```
 
-### 时间线
+LLM 下一轮开始时就能在同一批用户消息里看到 `<task_notification>`，无需主动调用工具查询。
+
+### 本章工具集
+
+本章工具集：`bash`、`read_file`、`write_file`、`create_task`、`list_tasks`、
+`get_task`、`claim_task`、`complete_task`。后台能力是 `bash` 上的 `run_in_background` 布尔参数。
+
+### 时间线（mock 演示）
 
 ```
-轮1: SpawnBackground(bg_scan, 80ms)  ─┐ 立即返回
-     BashExec("npm run build")        ─┤ → isSlowOperation → 自动后台化
-                                       │ （bg_scan 和 build 在后台并行运行）
-轮2: BashExec(前台工作)                │
-                                       │ [80ms后: bg_scan 完成，写入 notificationQueue]
-                                       │ [60ms后: build 完成，写入 notificationQueue]
-轮3前: AutoInject 检查到 2 条通知 ←───┘
-       前置注入 <task_notification> 消息
-轮3: WaitBackground(bg_scan) → 已完成，立即返回
-轮4: end_turn
+轮1: bash(run_in_background: true) —— "npm install"
+     → shouldRunBackground 命中 → [background] dispatched bg_0001（交给后台，不等它）
+     → tool_result 是占位串 "[Background task bg_0001 started] ..."
+     （此刻 collect 取不到结果：慢命令要跑约 25ms，后台任务还没完成）
+轮2: 主循环继续前台 bash("echo ...")；其间 Chat 在等待，后台任务趁机往下跑并完成
+     → collectBackgroundResults 取出 bg_0001，生成 <task_notification>（含 duration_ms）
+     → 与本轮前台 bash 的 tool_result 合并进同一条 user 消息（[inject] 1 条）
+轮3: mock 在对话里读到该通知并回显 → end_turn
 ```
 
 ---
@@ -119,26 +187,44 @@ if (isSlowOperation(command)) {
 
 | 组件 | 之前 (s12) | 之后 (s13) |
 |------|-----------|-----------|
-| 任务执行 | 同步等待（CreateTask/ClaimTask/CompleteTask） | 后台异步（SpawnBackground）|
-| 完成通知 | 需主动查询任务状态 | 自动注入 `<task_notification>` |
-| BashExec | 始终同步阻塞 | `isSlowOperation` 自动后台化 |
-| 新共享状态 | — | `notificationQueue` + `backgroundTasks` |
-| 新工具函数 | — | `isSlowOperation` 启发式检测 |
-| 新 Effect | — | `SpawnBackground`、`CollectNotifications`、`WaitBackground` |
+| 任务执行 | 同步等待 | `bash run_in_background` / 按关键字判断慢命令 → 后台 |
+| 后台机制 | — | `BackgroundRegistry`（Mutex + tasks/results 两张表） |
+| 任务命名 | — | `bg_0001`（`bg_%04d`，自增计数） |
+| 完成通知 | 主动查询任务状态 | `collectBackgroundResults` 自动注入 `<task_notification>` |
+| 新 Effect | — | `ExecuteTool`、`StartBackground`、`CollectBackgroundResults` |
+| 新工具 | — | 无新增工具（后台由 `bash` 参数触发） |
 
 ---
 
 ## 运行
 
 ```bash
-npm run s13
+npm run s13        # 默认 mock，离线运行
+```
+
+标准输出结尾：
+
+```
+[Chat] → 轮次 3
+
+[S13] 完成: 前台工作结束，已收到后台任务完成通知：
+<task_notification>
+  <task_id>bg_0001</task_id>
+  <status>completed</status>
+  <command>npm install</command>
+  <duration_ms>27</duration_ms>
+  <summary>(执行: npm install)</summary>
+</task_notification>
 ```
 
 ---
 
 ## 本章小结
 
-**后台任务 = SpawnBackground 在 Handler 层启动 Promise 但不阻塞返回；通知自动注入 = Agent Loop 在每轮 Chat 前检查 notificationQueue，前置 `<task_notification>` 消息；isSlowOperation 启发式让普通 BashExec 无缝自动后台化。三者合力让 LLM 在每轮开始时就知道后台状态，无需等待。**
+**后台任务 = `startBackgroundTask` 用一个「启动后不等它」的 async 函数，让工作在对话之外独立进行，
+注册表用 `Mutex` 保护 `background_tasks` / `background_results` 两张表；`bg_%04d` 是任务身份；
+`collectBackgroundResults` 把已完成任务整理成 `<task_notification>`；主循环每轮把通知并进 user 消息，
+让模型无需主动查询即可获知后台状态。**
 
 ---
 
@@ -161,7 +247,7 @@ CC 的后台任务比教学版丰富得多：
 | `sleep` | 睡眠定时器（SleepTool） |
 | `mcp_notification` | MCP 服务器推送的通知（对接 s19） |
 
-教学版只实现了 `bash`/`spawn` 类型。
+教学版只实现了 `bash` 类型。
 
 ### 二、pendingToolUseSummary：通知的格式化注入
 
@@ -185,7 +271,7 @@ CC 对长时间运行的后台 bash 任务有看门狗：
 - 任务输出超过 10KB 则截断并发通知
 - 进程意外退出（非零 exit code）自动发送 `failed` 通知
 
-教学版用 `setTimeout` 简化，不处理截断和看门狗。
+教学版不做看门狗，后台任务完成后一次性写回结果。
 
 ### 四、并发控制
 
@@ -195,10 +281,11 @@ CC 同时运行的后台任务有上限（默认 10 个），超出则排队等�
 
 | 简化项 | 教学版 | CC |
 |--------|--------|-----|
-| 任务类型 | 1 种（通用 spawn） | 7 种 |
+| 任务类型 | 1 种（bash） | 7 种 |
+| bash 实现 | 不真正 fork，用一段固定的等待模拟耗时（慢命令更久，约 25ms） | 真正子进程 + 管道 |
 | 通知格式 | `<task_notification>` 文本 | `<function_results>` 标准格式 |
 | 看门狗 | 无 | 30s 心跳，输出截断 |
 | 并发控制 | 无 | 上限 + 依赖图 |
-| 自动后台化 | `isSlowOperation` 关键词 | 更完整的启发式 + 超时检测 |
+| 自动后台化 | `shouldRunBackground`：模型明确要求 + 按关键字猜测 | 更完整的判断规则 + 超时检测 |
 
 </details>

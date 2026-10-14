@@ -56,7 +56,7 @@ Layer 2（按需，较重）
 | `_scan_skills()` 扫描目录，`_parse_frontmatter()` 解析元数据 | `ListSkills` Handler 实现同样逻辑 |
 | `SKILL_REGISTRY = { name: { description, content } }` | Handler 内部的注册表 |
 | `load_skill(name)` 工具返回完整内容 | `LoadSkill` Effect → Handler 返回完整 Markdown |
-| 安全校验：只接受注册的技能名，不接受文件路径 | Handler 同样的白名单验证 |
+| 安全校验：只接受注册的技能名，不接受文件路径 | Handler 做同样的校验（只接受已注册的技能名） |
 
 ---
 
@@ -65,17 +65,17 @@ Layer 2（按需，较重）
 ### 两个 Effect
 
 ```typescript
-interface ListSkillsEffect extends BaseEffect {
-  type: 'ListSkills';
-  input: Record<string, never>;
-  output: Array<{ name: string; description: string }>;
-}
+interface ListSkillsEffect extends Effect<
+  'ListSkills',
+  Record<string, never>,
+  Array<{ name: string; description: string }>
+> {}
 
-interface LoadSkillEffect extends BaseEffect {
-  type: 'LoadSkill';
-  input: { name: string };
-  output: string; // 完整 Markdown 内容
-}
+interface LoadSkillEffect extends Effect<
+  'LoadSkill',
+  { name: string },
+  string // 完整 Markdown 内容
+> {}
 ```
 
 ### Agent 启动时的知识目录注入
@@ -86,7 +86,8 @@ function* agentLoop(perform: PerformFn<S07Effect>) {
   const skills = yield* perform({ type: 'ListSkills', input: {} });
   const skillDir = skills.map(s => `- ${s.name}: ${s.description}`).join('\n');
 
-  const systemPrompt = `你是编码助手。\n\n可用技能（用 load_skill 加载）:\n${skillDir}`;
+  const systemPrompt =
+    baseSystemPrompt() + "\n\n" + `可用技能：\n${skillDir}\n\n当某个技能适用时，用 load_skill 读取完整说明。`;
 
   // Layer 2 在循环里按需触发
   while (true) {
@@ -139,15 +140,15 @@ npm run s07
 [S07] Skill Loading 启动
 
 [ListSkills] 发现 3 个技能:
+  - agent-builder: 设计和构建 AI Agent 系统...
   - code-review: 对代码进行全面的质量审查...
-  - mcp-builder: 构建 MCP 服务器...
-  - pdf-export: 将 Markdown 导出为 PDF...
+  - mcp-builder: 构建 MCP（Model Context Protocol）服务器...
 
 [Chat] → 轮次 1
-[System] 包含技能目录 (326 字符)
+[System] 包含技能目录 (642 字符)
 [LLM]  ← tool_use, 工具: list_skills
 ...
-[LoadSkill] 加载技能: code-review (248 字符)
+[LoadSkill] 加载技能: code-review (568 字符，来自文件)
 ...
 ```
 
