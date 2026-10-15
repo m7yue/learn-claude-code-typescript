@@ -11,18 +11,17 @@
  * AssembleToolPool 将本地工具和远程 MCP 工具合并为统一接口，
  * 使用 mcp__{server}__{tool} 前缀避免命名冲突。
  *
- * 数据流：
+ * 控制流：连接与装配是宿主（循环外）的阶段，模型只见已就绪的工具。
  *
- *   mcp_connect(serverId)
+ *   宿主启动（agentLoop 的 while 之前）
  *        │  MCPConnect → MCPClient.register(...)（模拟 tools/list，登记工具目录）
  *        ▼
- *   assemble_tool_pool
  *        │  AssembleToolPool：本地工具 + 规范化后的 mcp__{server}__{tool}
  *        ▼
- *   currentToolPool —— 唯一的工具来源；Chat 每轮把它作为 tools 传给模型
+ *   tools —— 循环内唯一的工具来源；Chat 每轮把它作为 tools 传给模型
  *        │
  *        ▼  模型发出 mcp__{server}__{tool} 调用
- *   按名称在池中查到对应 MCP 工具 → 还原原始工具名 → MCPToolCall（模拟 tools/call）
+ *   按名称在 tools 中查到对应 MCP 工具 → 还原原始工具名 → MCPToolCall（模拟 tools/call）
  */
 
 import { runAgent } from '../runtime/core.ts';
@@ -60,7 +59,7 @@ interface MCPConnectEffect extends Effect<'MCPConnect', { serverUrl: string; ser
 
 interface MCPToolCallEffect extends Effect<'MCPToolCall', { serverId: string; toolName: string; args: Record<string, unknown> }, string> {}
 
-interface AssembleToolPoolEffect extends Effect<'AssembleToolPool', { localTools: ToolDef[]; mcpServers: MCPServer[] }, ToolDef[]> {}
+interface AssembleToolPoolEffect extends Effect<'AssembleToolPool', { localTools: ToolDef[] }, ToolDef[]> {}
 
 type S19Effect = ChatEffect | BashExecEffect | MCPConnectEffect | MCPToolCallEffect | AssembleToolPoolEffect;
 
@@ -154,52 +153,40 @@ const MOCK_SERVER_FACTORIES: Record<string, () => MCPClient> = {
   'database-mcp': createDatabaseMcpClient,
 };
 
-// Mock LLM：连接 MCP → 组装工具池（含 mcp__ 前缀）→ 调用 MCP 工具
+// 宿主配置：模拟用户的 `.mcp.json` / `claude mcp add` —— 用户在运行前就配置好要连的服务器。
+// 这些不由模型决定；宿主在模型运行之前连接它们并发现工具。
+const MCP_SERVER_CONFIG = [
+  { serverId: 'github-mcp', serverUrl: 'mcp://github.tools' },
+  { serverId: 'database-mcp', serverUrl: 'mcp://db.tools' },
+];
+
+// Mock LLM：工具池已在宿主阶段就绪，模型直接调用 mcp__ 前缀工具
 const mockResponses = [
-  // 轮1：连接两个 MCP 服务器
-  {
-    stop_reason: 'tool_use' as const,
-    content: [
-      { type: 'text' as const, text: '连接外部 MCP 服务器。' },
-      { type: 'tool_use' as const, id: 'm1', name: 'mcp_connect', input: { serverUrl: 'mcp://github.tools', serverId: 'github-mcp' } },
-      { type: 'tool_use' as const, id: 'm2', name: 'mcp_connect', input: { serverUrl: 'mcp://db.tools', serverId: 'database-mcp' } },
-    ],
-  },
-  // 轮2：组装工具池（工具名将带 mcp__ 前缀）
-  {
-    stop_reason: 'tool_use' as const,
-    content: [
-      { type: 'text' as const, text: '组装工具池，MCP 工具带规范化前缀。' },
-      { type: 'tool_use' as const, id: 'm3', name: 'assemble_tool_pool', input: {} },
-    ],
-  },
-  // 轮3：调用 mcp__github-mcp__gh_list_prs（连字符保留，normalizeMcpName 只替换非法字符）
+  // 轮1：调用 mcp__github-mcp__gh_list_prs（连字符保留，normalizeMcpName 只替换非法字符）
   {
     stop_reason: 'tool_use' as const,
     content: [
       { type: 'text' as const, text: '使用 GitHub MCP 工具列出 PR。' },
-      { type: 'tool_use' as const, id: 'm4', name: 'mcp__github-mcp__gh_list_prs', input: { repo: 'myorg/myrepo', state: 'open' } },
+      { type: 'tool_use' as const, id: 'm1', name: 'mcp__github-mcp__gh_list_prs', input: { repo: 'myorg/myrepo', state: 'open' } },
     ],
   },
-  // 轮4：调用 mcp__database-mcp__db_query
+  // 轮2：调用 mcp__database-mcp__db_query
   {
     stop_reason: 'tool_use' as const,
     content: [
       { type: 'text' as const, text: '查询数据库用户数量。' },
-      { type: 'tool_use' as const, id: 'm5', name: 'mcp__database-mcp__db_query', input: { sql: 'SELECT COUNT(*) FROM users' } },
+      { type: 'tool_use' as const, id: 'm2', name: 'mcp__database-mcp__db_query', input: { sql: 'SELECT COUNT(*) FROM users' } },
     ],
   },
-  // 轮5：结束
+  // 轮3：结束
   {
     stop_reason: 'end_turn' as const,
-    content: [{ type: 'text' as const, text: 'MCP 插件演示完成：动态发现→mcp__ 前缀工具池→透明调用。' }],
+    content: [{ type: 'text' as const, text: 'MCP 插件演示完成：宿主启动时发现→mcp__ 前缀工具池→模型透明调用。' }],
   },
 ];
 
 let roundIndex = 0;
 const connectedServers: MCPServer[] = [];
-/** 最近一次装配的工具池，用于把带 mcp__ 前缀的工具名透明路由回原始工具。 */
-let currentToolPool: ToolDef[] = [];
 
 function mockLLM(_messages: Message[], _tools: ToolDef[]): LLMResponse {
   return mockResponses[Math.min(roundIndex++, mockResponses.length - 1)] as LLMResponse;
@@ -218,7 +205,7 @@ const s19Handlers = {
     // real 模式注入的 system prompt，引导模型使用工具完成任务。
     // mock 模式不读取该字段，故零配置运行行为不变。
     const systemPrompt = buildSystemPrompt(
-      '使用内置工具和已连接的 MCP 工具解决任务。使用某个 server 前先调用 mcp_connect 连接。',
+      '使用内置工具和已连接的 MCP 工具解决任务。',
       mcpNames.length ? `已连接的 MCP 服务器：${mcpNames.join('、')}` : '',
     );
     await new Promise(r => setTimeout(r, 30));
@@ -277,7 +264,6 @@ const s19Handlers = {
       }
     }
     const pool = [...localTools, ...mcpToolDefs];
-    currentToolPool = pool;
     console.log(`[AssembleToolPool] ${localTools.length} 本地 + ${mcpToolDefs.length} MCP = ${pool.length} 总计`);
     if (mcpToolDefs.length > 0) {
       console.log(`  MCP 工具（规范化前缀）:`);
@@ -293,15 +279,20 @@ const s19Handlers = {
 
 const LOCAL_TOOLS: ToolDef[] = [
   { name: 'bash', description: '执行 shell 命令', source: 'local' },
-  { name: 'mcp_connect', description: '连接 MCP 服务器，动态发现工具', source: 'local' },
-  { name: 'assemble_tool_pool', description: '组装工具池（本地 + MCP，生成 mcp__ 前缀名称）', source: 'local' },
 ];
 
 function* agentLoop(perform: PerformFn<S19Effect>) {
+  // 宿主阶段（循环外）：连接用户配置的每个 MCP 服务器并发现工具，然后装配统一工具池。
+  // 模型看不见这两步——它只看到装配好的工具池，只负责「选一个工具来调」。
+  const servers: MCPServer[] = [];
+  for (const cfg of MCP_SERVER_CONFIG) {
+    servers.push(yield* perform({ type: 'MCPConnect', input: cfg }));
+  }
+  const tools = yield* perform({ type: 'AssembleToolPool', input: { localTools: LOCAL_TOOLS } });
+
   const messages: Message[] = [
-    { role: 'user', content: '连接 GitHub 和数据库 MCP 服务器，组装工具池，然后查询 PR 列表和用户数量。' },
+    { role: 'user', content: '查询 PR 列表和用户数量。' },
   ];
-  let tools: ToolDef[] = LOCAL_TOOLS;
 
   while (true) {
     const response = yield* perform({ type: 'Chat', input: { messages, tools } });
@@ -318,7 +309,7 @@ function* agentLoop(perform: PerformFn<S19Effect>) {
         let output: string;
 
         // 透明路由：按名称在工具池中查找是否是 MCP 工具
-        const mcpTool = currentToolPool.find(t => t.name === block.name && t.source === 'mcp');
+        const mcpTool = tools.find(t => t.name === block.name && t.source === 'mcp');
 
         if (mcpTool) {
           // 从前缀名称还原原始工具名：mcp__{server}__{tool} → tool
@@ -336,22 +327,6 @@ function* agentLoop(perform: PerformFn<S19Effect>) {
             case 'bash':
               output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
               break;
-            case 'mcp_connect': {
-              const server = yield* perform({
-                type: 'MCPConnect',
-                input: { serverUrl: block.input['serverUrl'] as string, serverId: block.input['serverId'] as string },
-              });
-              output = `已连接: ${server.id}，发现 ${server.tools.length} 个工具`;
-              break;
-            }
-            case 'assemble_tool_pool': {
-              tools = yield* perform({
-                type: 'AssembleToolPool',
-                input: { localTools: LOCAL_TOOLS, mcpServers: connectedServers },
-              });
-              output = `工具池已更新: ${tools.length} 个工具`;
-              break;
-            }
             default:
               output = `[未知工具] ${block.name}`;
           }

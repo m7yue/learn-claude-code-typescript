@@ -928,6 +928,9 @@ interface MCPServer {
 const mcpClients = new Map<string, MCPServer>();
 const mcpToolIndex = new Map<string, { serverId: string; toolName: string }>();
 
+// 宿主配置：用户在运行前配置好的 MCP 服务器；宿主在 leadLoop 启动时连接它们。
+const CONFIGURED_MCP_SERVERS = ['docs', 'deploy'];
+
 function mockServer(serverId: string): MCPServer | null {
   if (serverId === 'docs') {
     return {
@@ -974,7 +977,8 @@ function callMcpTool(serverId: string, toolName: string, args: Record<string, un
 // Part 11: 工具 Schema（统一走 runtime 注册表）
 // ============================================================
 
-// lead（主 Agent）本地工具全集；连接 MCP 后，MCP 工具会在 AssembleToolPool 中动态并入。
+// lead（主 Agent）本地工具全集；宿主在 leadLoop 启动时连接 MCP，
+// 连接后 MCP 工具在 AssembleToolPool 中并入。
 const LEAD_LOCAL_TOOLS: ToolSchema[] = schemasFor(
   'bash',
   'read_file',
@@ -1004,7 +1008,6 @@ const LEAD_LOCAL_TOOLS: ToolSchema[] = schemasFor(
   'create_worktree',
   'remove_worktree',
   'keep_worktree',
-  'mcp_connect',
 );
 
 // 队友可用工具：只能读写文件、收发消息、操作任务图与提交计划；不能拉起子代理或管理 worktree。
@@ -1053,7 +1056,7 @@ function mockLead(messages: Message[]): LLMResponse {
       return respond({
         stop_reason: 'tool_use',
         content: [
-          textBlock('阶段1 初始化：读取历史记忆、加载技能、登记待办、连接 MCP 服务器。'),
+          textBlock('阶段1 初始化：读取历史记忆、加载技能、登记待办。'),
           toolUse('L0a', 'read_memory', { query: '项目历史' }),
           toolUse('L0b', 'load_skill', { name: 'worktree-isolation' }),
           toolUse('L0c', 'todo_write', {
@@ -1063,8 +1066,6 @@ function mockLead(messages: Message[]): LLMResponse {
               { content: '隔离执行与验证', status: 'pending', activeForm: '隔离执行与验证' },
             ],
           }),
-          toolUse('L0d', 'mcp_connect', { serverId: 'docs' }),
-          toolUse('L0e', 'mcp_connect', { serverId: 'deploy' }),
         ],
       });
     case 1:
@@ -1961,6 +1962,12 @@ function* leadLoop(perform: PerformFn<S20Effect>) {
   const state = new RecoveryState();
   let maxTokens = DEFAULT_MAX_TOKENS;
 
+  // 宿主阶段（循环外）：连接用户配置的 MCP 服务器。
+  // 模型看不到连接过程——它只在后续轮次里调用已装配的 mcp__ 工具。
+  for (const serverId of CONFIGURED_MCP_SERVERS) {
+    yield* perform({ type: 'MCPConnect', input: { serverId } });
+  }
+
   while (true) {
     // ── 注入：cron 队列 + 后台通知 ──
     for (const job of consumeCronQueue()) {
@@ -2267,11 +2274,6 @@ function* leadLoop(perform: PerformFn<S20Effect>) {
               input: { worktreeId: String(block.input['worktreeId'] ?? '') },
             });
             output = res.kept ? `worktree kept: ${res.reason}` : `[错误] ${res.reason}`;
-            break;
-          }
-          case 'mcp_connect': {
-            const res = yield* perform({ type: 'MCPConnect', input: { serverId: String(block.input['serverId'] ?? '') } });
-            output = `MCP '${res.serverId}' connected: ${res.toolNames.join(', ') || '(no tools)'}`;
             break;
           }
           default:

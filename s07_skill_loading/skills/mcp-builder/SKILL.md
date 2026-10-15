@@ -54,8 +54,12 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 ```
 
-### 3. 在 Agent 中使用（MCPConnect Effect）
+### 3. 宿主连接服务器（MCPConnect Effect）
+
+连接由宿主在模型运行之前完成，不是模型可调用的工具。宿主按用户配置连接每个服务器、执行 `tools/list` 发现工具，再把它们并进统一工具池；模型只看到已就绪的 `mcp__{server}__{tool}`，只负责选择调用。
+
 ```typescript
+// 宿主在 agentLoop 的 while 之前执行（每个已配置 server 一次）
 const server = yield* perform({
   type: 'MCPConnect',
   input: { serverUrl: 'mcp://localhost', serverId: 'my-mcp' }

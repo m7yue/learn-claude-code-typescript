@@ -28,9 +28,11 @@ switch (block.name) {
 
 ## 代数效应视角
 
-三个 Effect 实现动态工具发现和调用：
+三个 Effect 分成两个阶段——前两个是宿主（`agentLoop`）在 `while` 循环之前做的，模型看不见；第三个才是模型触发的：
 
 ```typescript
+// ── 宿主阶段：循环之前，模型不可见 ──
+
 // 1. 连接 MCP 服务器，获取工具目录（模拟 tools/list JSON-RPC）
 const server = yield* perform({
   type: 'MCPConnect',
@@ -41,9 +43,11 @@ const server = yield* perform({
 // 2. 合并本地工具和 MCP 工具，生成 mcp__{server}__{tool} 前缀名
 const toolPool = yield* perform({
   type: 'AssembleToolPool',
-  input: { localTools: LOCAL_TOOLS, mcpServers: connectedServers }
+  input: { localTools: LOCAL_TOOLS }
 });
 // toolPool 含 'mcp__github-mcp__gh_list_prs' 等规范化名称
+
+// ── 模型阶段：模型只发出 tool_use，宿主把名称路由到这里 ──
 
 // 3. 透明调用 MCP 工具（Generator 只管路由，不关心是本地还是远程）
 const result = yield* perform({
@@ -52,13 +56,13 @@ const result = yield* perform({
 });
 ```
 
-| Python | 代数效应 TypeScript |
-|--------|-------------------|
-| `MCPClient.register(tool_defs, handlers)` | `MCPConnect` Effect（模拟 tools/list） |
-| `client.call_tool(name, args)` | `MCPToolCall` Effect（模拟 tools/call） |
-| `normalize_mcp_name(name)` | `normalizeMcpName()` — 相同规则 |
-| `assemble_tool_pool()` | `AssembleToolPool` Effect |
-| `mcp__{server}__{tool}` 前缀 | 同样命名约定，Handler 中生成 |
+| Python | 代数效应 TypeScript | 执行方 |
+|--------|-------------------|--------|
+| `MCPClient.register(tool_defs, handlers)` | `MCPConnect` Effect（模拟 tools/list） | 宿主，循环之前 |
+| `client.call_tool(name, args)` | `MCPToolCall` Effect（模拟 tools/call） | 模型发出调用，宿主路由 |
+| `normalize_mcp_name(name)` | `normalizeMcpName()` — 相同规则 | 宿主，装配时 |
+| `assemble_tool_pool()` | `AssembleToolPool` Effect | 宿主，循环之前 |
+| `mcp__{server}__{tool}` 前缀 | 同样命名约定，Handler 中生成 | 宿主，装配时 |
 
 ---
 
@@ -111,12 +115,12 @@ for (const [serverId, client] of mcpClients.entries()) {
 return [...localTools, ...mcpToolDefs];
 ```
 
-工具池更新后立即生效：下一轮 LLM 调用时，模型可以看到所有 `mcp__*` 工具。
+工具池在启动时装配一次，之后固定：模型从第一轮起就能看到所有 `mcp__*` 工具，不再随轮次变化。
 
 ### 透明路由（Generator 中）
 
 ```typescript
-const mcpTool = currentToolPool.find(t => t.name === block.name && t.source === 'mcp');
+const mcpTool = tools.find(t => t.name === block.name && t.source === 'mcp');
 
 if (mcpTool) {
   // 从前缀名还原原始工具名，透明转发给 MCPClient
@@ -131,9 +135,9 @@ if (mcpTool) {
 
 LLM 调用 `mcp__github-mcp__gh_list_prs`，Generator 识别为 MCP 工具，路由到 `MCPToolCall`，还原为 `gh_list_prs` 调用——LLM 和本地工具逻辑都看不到这个路由过程。
 
-### 无 Prompt 缓存
+### 装配时机：宿主先行，工具池固定
 
-连接新 MCP 服务器后工具池变化，缓存的旧工具列表会失效。s19 去掉了 prompt 缓存——代价是每轮多花一点序列化时间，收益是工具池始终反映最新状态。
+连接与装配都在 `agentLoop` 的 `while` 之前完成，模型从第一轮起就看到完整的工具列表，之后不再变化。这与真实 Claude Code 一致：宿主在模型运行前按用户配置连接服务器、执行 `tools/list` 发现工具、装配统一工具池；模型只负责「选一个工具来调」。本章不做 `tools/list_changed` 运行期通知，只在启动时发现一次。
 
 ---
 
@@ -142,12 +146,13 @@ LLM 调用 `mcp__github-mcp__gh_list_prs`，Generator 识别为 MCP 工具，路
 | 组件 | 之前 (s18) | 之后 (s19) |
 |------|-----------|-----------|
 | 工具来源 | 全部手写 builtin | 手写 + MCP 外部工具动态发现 |
-| 工具池 | 固定工具集合 | `AssembleToolPool` 动态组装 `mcp__` 前缀工具 |
+| 工具池 | 固定工具集合 | 宿主启动时经 `AssembleToolPool` 组装 `mcp__` 前缀工具池，此后固定 |
 | 名称安全 | 无 | `normalizeMcpName` 规范化 |
 | 新类 | — | `MCPClient`（模拟 tools/list + tools/call） |
 | 命名空间 | — | `mcp__{server}__{tool}` 避免冲突 |
 | 工具描述 | 无标注 | `(readOnly)` / `(destructive)` 标注 |
-| 新 Effect | — | `MCPConnect`、`MCPToolCall`、`AssembleToolPool` |
+| 新 Effect | — | `MCPConnect`、`AssembleToolPool`（宿主循环前）+ `MCPToolCall`（模型触发） |
+| 控制流 | — | 连接与装配归宿主，模型只见已就绪的工具池 |
 
 ---
 
@@ -161,7 +166,7 @@ npm run s19
 
 ## 本章小结
 
-**MCP = 动态工具发现的效应协议。`MCPClient` 封装 tools/list + tools/call 协议，`normalizeMcpName` 保证命名安全，`mcp__{server}__{tool}` 前缀避免多服务器工具名冲突，`AssembleToolPool` 构建统一工具池。Generator 通过 `tool.source` 路由，对 LLM 完全透明——这就是代数效应让"扩展不需要修改核心逻辑"的体现。**
+**MCP = 动态工具发现的效应协议。宿主在模型运行前连接服务器、发现工具、装配统一工具池（`MCPConnect` + `AssembleToolPool`），模型只在已就绪的工具池里选择并调用。`MCPClient` 封装 tools/list + tools/call 协议，`normalizeMcpName` 保证命名安全，`mcp__{server}__{tool}` 前缀避免多服务器工具名冲突。Generator 通过 `tool.source` 路由，对 LLM 完全透明——这就是代数效应让"扩展不需要修改核心逻辑"的体现。**
 
 ---
 

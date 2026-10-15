@@ -141,7 +141,7 @@ README.md
 | [s16](s16_team_protocols/) | Team Protocols | `RequestPlan`, `ReviewPlan` |
 | [s17](s17_autonomous_agents/) | Autonomous Agents | `IdlePoll`, `ScanUnclaimed` |
 | [s18](s18_worktree_isolation/) | Worktree Isolation | `CreateWorktree`, `BindWorktree`, `KeepWorktree`, `RemoveWorktree` |
-| [s19](s19_mcp_plugin/) | MCP Tools | `MCPConnect`, `MCPToolCall` |
+| [s19](s19_mcp_plugin/) | MCP Tools | `MCPConnect`、`AssembleToolPool`（宿主循环前）, `MCPToolCall`（模型触发） |
 | [s20](s20_comprehensive/) | Comprehensive Agent | 综合前 19 章机制 |
 
 ## 项目结构

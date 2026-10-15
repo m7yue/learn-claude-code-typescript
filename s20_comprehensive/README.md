@@ -37,7 +37,7 @@
 | 计划审批关口（真关口） | s16 | 队友 `SubmitPlan` 把计划登记为待处理，并发 `plan_approval_request`，随后 `WaitForPlanResponse` **阻塞**直到 lead 用 `ReviewPlan` 发回匹配的 `plan_approval_response`（并清除该待处理记录） |
 | 自主 WORK/IDLE/SHUTDOWN | s17 | 队友空闲时 `IdlePoll` 阻塞等待；可 `autoClaim` 主动认领可以开始的待处理任务；收到 `shutdown_request` 立即回 `shutdown_response` 退出 |
 | git worktree 隔离 | s18 | `spawnSync('git', ...)` 真实 `git worktree add/remove`；有未提交变更时拒绝删除，除非 `discard_changes`；`ensureGitRepo()` 在非 git 工作区自动 `git init` |
-| MCP 工具池 | s19 | 进程内教学 MCP server（`docs`=search/fetch、`deploy`=status）；`AssembleToolPool` 把 `mcp__{server}__{tool}` 装配进工具池；`MCPToolCall` 路由调用 |
+| MCP 工具池 | s19 | 宿主在 `leadLoop` 启动时连接进程内教学 MCP server（`docs`=search/fetch、`deploy`=status）；`AssembleToolPool` 把 `mcp__{server}__{tool}` 装配进工具池；`MCPToolCall` 路由调用 |
 | 上下文压缩流水线 | s08 | `toolResultBudget → snipCompact → microCompact → LLM 摘要(compactHistory)`；`prompt_too_long` 触发被动压缩；超大输出走 `PersistOutput` 写入磁盘 |
 | 系统提示装配 | s10 | `AssemblePrompt` 按上下文分段拼装（identity/tools/workspace/memory/compaction/time），相同上下文命中缓存 |
 | 错误恢复 | s11 | `classifyError`（按 name/message/status 字符串分类）；429 等待后重试、连续 529 切换到备用模型、`max_tokens` 升级上限后继续 |
@@ -65,7 +65,7 @@
 
 工具 schema 复用共享的 `runtime/tool-schemas.ts`（`schemasFor(...)`），并按角色装配：
 
-- **Lead（32 个工具）**：`bash, read_file, write_file, edit_file, glob, todo_write, task, load_skill, compact, read_memory, write_memory, create_task, list_tasks, get_task, claim_task, complete_task, schedule_cron, list_crons, cancel_cron, spawn_teammate, send_message, check_inbox, request_shutdown, request_plan, review_plan, create_worktree, remove_worktree, keep_worktree, mcp_connect` + 装配后的 MCP 工具（`mcp__docs__search`, `mcp__docs__fetch`, `mcp__deploy__status`）。
+- **Lead（31 个工具）**：`bash, read_file, write_file, edit_file, glob, todo_write, task, load_skill, compact, read_memory, write_memory, create_task, list_tasks, get_task, claim_task, complete_task, schedule_cron, list_crons, cancel_cron, spawn_teammate, send_message, check_inbox, request_shutdown, request_plan, review_plan, create_worktree, remove_worktree, keep_worktree` + 装配后的 MCP 工具（`mcp__docs__search`, `mcp__docs__fetch`, `mcp__deploy__status`）。
 - **Teammate（8 个）**：`bash, read_file, write_file, send_message, list_tasks, claim_task, complete_task, submit_plan`。
 - **Subagent（5 个）**：`bash, read_file, write_file, edit_file, glob`。
 
@@ -75,9 +75,9 @@
 
 `mockModel` 只替换模型调用（`callChat` 的第一个参数），其余全走真实 handler。脚本状态由模块级 `memo` 驱动（轮次计数器只在成功返回后自增，因此重试不推进脚本）；任务 id / 计划 request_id 由 handler 真实写回 `memo`（`CreateTask` 写 `taskIdBySubject`，`SubmitPlan` 写 `planRequestId`），mock 据此引用**真实** id，从而真实演示 blockedBy 依赖图与审批关口。
 
-Lead 侧 **18 轮**端到端脚本：
+Lead 侧 **18 轮**端到端脚本（MCP 连接由宿主在循环开始前完成，不计入轮次）：
 
-1. **R0 初始化**：`read_memory` / `load_skill` / `todo_write` / `mcp_connect×2`
+1. **R0 初始化**：`read_memory` / `load_skill` / `todo_write`
 2. **R1 规划**：`spawn_teammate`（启动独立的队友循环）+ `request_plan`
 3. **R2 任务根节点**：`create_task` A（设计接口）、B（实现核心）、D（编写迁移说明）
 4. **R3 依赖 + 收计划**：`create_task` C（blockedBy A,B，用真实 id）+ `check_inbox`（等 `plan_approval_request`）
@@ -116,6 +116,8 @@ Lead 侧 **18 轮**端到端脚本：
 ```
 
 **每个 Handler 只关心自己的副作用，Generator 只做业务决策。** `runAgent` 统一路由 41 种 Effect，队友 / 子代理各自是嵌套的 `runAgent` 子循环——同一套 handler 表被复用，因此并发角色无需任何额外基础设施。
+
+图中 `MCPConnect` 是宿主在 `leadLoop` 的 `while` 之前 yield 的一次性阶段（连接用户配置的服务器），不是模型可见的工具；模型只在后续轮次里发出 `mcp__...` 调用（触发 `MCPToolCall`）。
 
 ---
 
@@ -191,11 +193,13 @@ CC 的 Memory 系统有一个 `MEMORY.md` 索引文件，每条 memory 对应 `/
 ### 循环结构图
 
 ```
+[宿主启动] 连接用户配置的 MCP 服务器（MCPConnect × N）——循环之前，模型不可见
+  ↓
 用户消息
   ↓
 [自动注入] memory + cron 通知 + 后台通知 + MCP 推送
   ↓
-PrepareContext（压缩流水线）→ AssemblePrompt → AssembleToolPool
+PrepareContext（压缩流水线）→ AssemblePrompt → AssembleToolPool（MCP 工具在此并入）
   ↓
 Chat(messages, tools, systemPrompt, model, maxTokens)
   ↓

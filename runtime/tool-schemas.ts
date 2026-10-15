@@ -243,13 +243,6 @@ export const TOOL_SPECS: Record<string, ToolSchema> = {
     { plan: str("计划内容") },
     ["plan"],
   ),
-  mcp_connect: schema(
-    "mcp_connect",
-    "连接一个 MCP server 并发现其工具。",
-    { serverId: str("server 标识"), serverUrl: str("（可选）server 地址") },
-    ["serverId"],
-  ),
-  assemble_tool_pool: schema("assemble_tool_pool", "重新组装本地 + MCP 工具池。"),
   // 以下 4 个为工程层 src/harness 专属：无章节对应物，采用同样的动词优先命名。
   // TaskBoard 使用数字 id，故这里用 integer。
   // get_task 同时服务 s12/s14 章节（字符串 id，如 task_...）与工程层（数字 id）：

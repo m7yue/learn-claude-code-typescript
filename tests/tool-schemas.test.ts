@@ -32,7 +32,6 @@ test("specFor / schemasFor 对未注册名称直接抛错（不再静默丢弃�
 
 test("注册表名称快照（防止无意增删/改名）", () => {
   assert.deepEqual(Object.keys(TOOL_SPECS).sort(), [
-    "assemble_tool_pool",
     "auto_claim",
     "bash",
     "bind_worktree",
@@ -55,7 +54,6 @@ test("注册表名称快照（防止无意增删/改名）", () => {
     "list_tasks",
     "list_team",
     "load_skill",
-    "mcp_connect",
     "read_file",
     "read_memory",
     "remove_worktree",
