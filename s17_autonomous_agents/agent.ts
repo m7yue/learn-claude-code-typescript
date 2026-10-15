@@ -239,6 +239,15 @@ function autoClaim(owner: string): ClaimOutcome {
 // Part 3: MessageBus —— 真实 JSONL 信箱（.mailboxes/*.jsonl）
 // ============================================================
 
+// 队友名会拼进信箱文件名，先按白名单校验字符。
+const VALID_AGENT_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+function validateAgentId(agentId: string): void {
+  if (agentId === '.' || agentId === '..' || !VALID_AGENT_ID.test(agentId)) {
+    throw new Error(`非法队友名: '${agentId}'（只允许字母、数字、点、下划线、短横线，1-64 字符）`);
+  }
+}
+
 /**
  * 文件消息总线：每个 Agent 一个 `.jsonl` 信箱，一行一条 JSON 消息。
  *   send()       —— append 一行（真实追加写）
@@ -256,6 +265,7 @@ class MessageBus {
   }
 
   private inboxPath(agentId: string): string {
+    validateAgentId(agentId);
     return path.join(MAILBOXES_DIR, `${agentId}.jsonl`);
   }
 

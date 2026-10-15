@@ -15,6 +15,7 @@ import { extractText, getToolUseBlocks, messageText } from '../runtime/response.
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
+import { WORKSPACE_ROOT } from '../runtime/workspace.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -40,7 +41,8 @@ type SubEffect = ChatEffect | BashExecEffect | ReadFileEffect;
 // Part 2: Handler 实现
 // ============================================================
 
-const WORKDIR = process.cwd();
+// 工作区根目录（可用 AGENT_WORKSPACE 覆盖）。
+const WORKDIR = WORKSPACE_ROOT;
 // 子 Agent 的默认最大轮数；超限则中断并返回已得到的最后一段文本。
 const DEFAULT_MAX_ROUNDS = 10;
 

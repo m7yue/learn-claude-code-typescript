@@ -117,9 +117,9 @@ function parseFrontmatter(text: string): { meta: Record<string, string>; body: s
   return { meta, body: parts[2].trim() };
 }
 
-// 把记忆名转成安全的文件名：小写、空格与斜杠替换为连字符。
+// 把记忆名转成安全的文件名：小写，字母数字与 . _ - 之外的字符一律换成连字符。
 function slugify(name: string): string {
-  return name.toLowerCase().replace(/ /g, '-').replace(/\//g, '-');
+  return name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[.-]+/, '') || 'memory';
 }
 
 // 记忆文件列表（按文件名排序，排除索引）。
@@ -169,13 +169,24 @@ function rebuildIndex(): void {
   fs.writeFileSync(MEMORY_INDEX_PATH, lines.length ? lines.join('\n') + '\n' : '', 'utf8');
 }
 
+// 记忆文件名 → MEMORY_DIR 内的绝对路径；越界（含同前缀的兄弟目录）返回 null。
+function memoryFilePath(filename: string): string | null {
+  const base = path.resolve(MEMORY_DIR);
+  const filePath = path.resolve(base, filename);
+  if (filePath !== base && !filePath.startsWith(base + path.sep)) return null;
+  return filePath;
+}
+
 // 写单个记忆文件并重建索引。
 function writeMemoryFile(entry: MemoryEntry): string {
   fs.mkdirSync(MEMORY_DIR, { recursive: true });
   const filename = `${slugify(entry.name)}.md`;
+  // slugify 已过滤分隔符，这里再兜一次底：文件名无论如何不能跑出 .memory/。
+  const filePath = memoryFilePath(filename);
+  if (!filePath) throw new Error(`非法的记忆文件名: ${filename}`);
   const content =
     `---\nname: ${entry.name}\ndescription: ${entry.description}\ntype: ${entry.type}\n---\n\n${entry.body}\n`;
-  fs.writeFileSync(path.join(MEMORY_DIR, filename), content, 'utf8');
+  fs.writeFileSync(filePath, content, 'utf8');
   rebuildIndex();
   return filename;
 }
@@ -188,10 +199,8 @@ function readMemoryIndex(): string {
 
 // 读取单个记忆文件（不存在返回 null）；额外做路径逃逸防护。
 function readMemoryFile(filename: string): string | null {
-  const base = path.resolve(MEMORY_DIR);
-  const filePath = path.resolve(base, filename);
-  if (filePath !== base && !filePath.startsWith(base + path.sep)) return null;
-  if (!fs.existsSync(filePath)) return null;
+  const filePath = memoryFilePath(filename);
+  if (!filePath || !fs.existsSync(filePath)) return null;
   return fs.readFileSync(filePath, 'utf8');
 }
 

@@ -147,57 +147,42 @@ function ensureGitRepo(): void {
   ]);
 }
 
-/** child 是否位于 parent 目录之下（用于识别本章管理的 worktree）。 */
-function isUnder(child: string, parent: string): boolean {
-  const c = path.resolve(child);
-  const p = path.resolve(parent);
-  return c === p || c.startsWith(p + path.sep);
-}
-
 /**
- * 清理本章创建的所有 worktree 与 wt/* 分支。
+ * 清理**本次运行**创建的 worktree 与对应分支。
  *
- * - 删除所有位于 WORKTREES_DIR 下的已注册 worktree（保留主工作区）；
- * - prune 失效的 worktree 管理数据；
- * - 删除残留的物理目录；
- * - 删除 refs/heads/wt/* 分支。
- *
- * 启动时与退出时各调用一次，保证重复运行可复现、仓库保持干净。
+ * 只遍历登记簿 worktreePaths（createWorktree 成功时登记、removeWorktree 成功时注销）：
+ * - 逐个 git worktree remove --force，目录还在就再删一次兜底；
+ * - 同名分支 wt/<name> 一并删除；
+ * - keep_worktree 明确保留的名字会跳过；
+ * - 最后 prune 一次失效的管理数据（只清目录已不存在的注册项）。
  */
 function cleanupWorktrees(): void {
-  const list = runGit(['worktree', 'list', '--porcelain']);
-  if (list.ok) {
-    for (const line of list.out.split(/\r?\n/)) {
-      const m = /^worktree (.+)$/.exec(line.trim());
-      if (!m) continue;
-      const wtPath = m[1];
-      if (path.resolve(wtPath) === path.resolve(WORKSPACE_ROOT)) continue;
-      if (isUnder(wtPath, WORKTREES_DIR)) {
-        runGit(['worktree', 'remove', '--force', wtPath]);
-      }
+  for (const [name, wtPath] of worktreePaths) {
+    if (keptWorktrees.has(name)) continue;
+    if (fs.existsSync(wtPath)) {
+      runGit(['worktree', 'remove', '--force', wtPath]);
+      // 物理目录兜底（worktree remove 失败或从未注册时残留）。
+      if (fs.existsSync(wtPath)) fs.rmSync(wtPath, { recursive: true, force: true });
     }
+    runGit(['branch', '-D', `wt/${name}`]);
   }
+  worktreePaths.clear();
   runGit(['worktree', 'prune']);
+}
 
-  // 物理目录兜底（worktree remove 失败或从未注册时残留）。
+/** 启动提示：.worktrees/ 下的残留目录只提示，不删除。 */
+function reportLeftovers(): void {
   try {
-    if (fs.existsSync(WORKTREES_DIR)) {
-      for (const entry of fs.readdirSync(WORKTREES_DIR)) {
-        const full = path.join(WORKTREES_DIR, entry);
-        if (fs.statSync(full).isDirectory()) {
-          fs.rmSync(full, { recursive: true, force: true });
-        }
-      }
+    if (!fs.existsSync(WORKTREES_DIR)) return;
+    const leftovers = fs
+      .readdirSync(WORKTREES_DIR)
+      .filter((entry) => fs.statSync(path.join(WORKTREES_DIR, entry)).isDirectory());
+    if (leftovers.length) {
+      console.log(`提示: .worktrees/ 下有上次残留（${leftovers.join(', ')}），本章不会自动删除；`);
+      console.log('      需要同名 worktree 时会先清掉这份残留再创建。\n');
     }
   } catch {
-    // 清理失败不阻断演示
-  }
-
-  const refs = runGit(['for-each-ref', '--format=%(refname:short)', 'refs/heads/wt/']);
-  if (refs.ok) {
-    for (const branch of refs.out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
-      runGit(['branch', '-D', branch]);
-    }
+    // 提示失败不阻断演示
   }
 }
 
@@ -366,6 +351,9 @@ function worktreePath(name: string): string {
 /** 本章创建的 worktree：name → 绝对路径（供 bash 的 cwd 路由与清理）。 */
 const worktreePaths = new Map<string, string>();
 
+/** keep_worktree 明确保留的名字：退出时的自动清理会跳过它们。 */
+const keptWorktrees = new Set<string>();
+
 /** 追加一条生命周期事件到 .worktrees/events.jsonl。 */
 function logEvent(type: 'create' | 'bind' | 'remove' | 'keep', worktree: string, taskId = ''): void {
   const event = { type, worktree, task_id: taskId, ts: Date.now() / 1000 };
@@ -399,9 +387,13 @@ function createWorktree(name: string, taskId = ''): WorktreeOpResult {
   if (err) return { ok: false, message: `Error: ${err}` };
 
   const wtPath = worktreePath(name);
+  // 同名残留（上次异常中断留下的）先清掉，保证可以重复运行。
   if (fs.existsSync(wtPath)) {
-    return { ok: false, message: `Worktree '${name}' already exists at ${wtPath}` };
+    runGit(['worktree', 'remove', '--force', wtPath]);
+    if (fs.existsSync(wtPath)) fs.rmSync(wtPath, { recursive: true, force: true });
+    runGit(['branch', '-D', `wt/${name}`]);
   }
+  keptWorktrees.delete(name);
 
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
   const res = runGit(['worktree', 'add', wtPath, '-b', `wt/${name}`, 'HEAD']);
@@ -424,12 +416,14 @@ function bindTaskToWorktree(taskId: string, name: string): WorktreeOpResult {
 }
 
 /**
- * 保留 worktree 供人工审查：不做任何删除，只记一条 keep 事件。
+ * 保留 worktree 供人工审查：不做任何删除，只记一条 keep 事件，
+ * 并让退出时的自动清理跳过它（后续显式的 remove_worktree 仍然生效）。
  * 分支 wt/<name> 一并保留。
  */
 function keepWorktree(name: string): WorktreeOpResult {
   const err = validateWorktreeName(name);
   if (err) return { ok: false, message: err };
+  keptWorktrees.add(name);
   logEvent('keep', name);
   return { ok: true, message: `Worktree '${name}' kept for review (branch: wt/${name})` };
 }
@@ -470,6 +464,7 @@ function removeWorktree(name: string, discardChanges = false): WorktreeOpResult 
 
   runGit(['branch', '-D', `wt/${name}`]);
   worktreePaths.delete(name);
+  keptWorktrees.delete(name); // 显式移除优先于先前的保留
   logEvent('remove', name);
   return { ok: true, message: `Worktree '${name}' removed` };
 }
@@ -739,6 +734,11 @@ function* agentLoop(perform: PerformFn<S18Effect>) {
         switch (block.name) {
           case 'bash': {
             const wtId = block.input['worktreeId'] as string | undefined;
+            // worktreeId 必须是本次运行创建过的名字，否则报错。
+            if (wtId && !worktreePaths.has(wtId)) {
+              output = `Error: unknown worktreeId '${wtId}'（已知: ${[...worktreePaths.keys()].join(', ') || '无'}）`;
+              break;
+            }
             const cwd = wtId ? worktreePaths.get(wtId) : undefined;
             output = yield* perform({
               type: 'BashExec',
@@ -856,11 +856,10 @@ console.log('[S18] Git Worktree Isolation 启动\n');
 
 // 保证 WORKSPACE_ROOT 是可用的 git 仓库（临时目录会走 git init 分支）。
 ensureGitRepo();
-// 清理上一次可能残留的 worktree / wt/* 分支，保证可重复运行。
-cleanupWorktrees();
 // 本次演示从零开始记录事件。
 fs.mkdirSync(WORKTREES_DIR, { recursive: true });
 fs.writeFileSync(WORKTREE_EVENTS_PATH, '', 'utf8');
+reportLeftovers();
 
 console.log(`工作区 (git 仓库): ${WORKSPACE_ROOT}`);
 console.log(`Worktrees 目录:     ${WORKTREES_DIR}`);

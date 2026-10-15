@@ -17,6 +17,7 @@ import { extractText, getToolUseBlocks } from '../runtime/response.ts';
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { ENVIRONMENT_PROMPT } from '../runtime/system-prompt.ts';
+import { WORKSPACE_ROOT } from '../runtime/workspace.ts';
 
 // ============================================================
 // Part 1: Effect 类型定义
@@ -151,7 +152,7 @@ function* agentLoop(perform: PerformFn<S10Effect>) {
   // 初始上下文
   let context: PromptContext = {
     enabledTools: TOOLS.map((t) => t.name),
-    workspace: process.cwd(),
+    workspace: WORKSPACE_ROOT,
   };
 
   while (true) {

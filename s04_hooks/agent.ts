@@ -20,6 +20,7 @@ import { extractText, getToolUseBlocks } from '../runtime/response.ts';
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
+import { WORKSPACE_ROOT } from '../runtime/workspace.ts';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 
@@ -51,7 +52,8 @@ type S04Effect =
 // Part 2: Handler 实现
 // ============================================================
 
-const WORKDIR = process.cwd();
+// 工作区根目录（可用 AGENT_WORKSPACE 覆盖）。
+const WORKDIR = WORKSPACE_ROOT;
 
 // PreToolUse 权限 Hook 使用的禁止清单：命令里只要包含其中一项就拦截。
 const DENY_LIST = ['rm -rf /', 'rm -rf ~', 'sudo', 'shutdown', 'reboot'];

@@ -25,7 +25,7 @@ import { extractText, getToolUseBlocks } from '../runtime/response.ts';
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
-import { MAILBOXES_DIR } from '../runtime/workspace.ts';
+import { MAILBOXES_DIR, WORKSPACE_ROOT } from '../runtime/workspace.ts';
 import { Mutex } from '../runtime/locks.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -84,6 +84,15 @@ type S15Effect =
 // Part 2: MessageBus —— 真实的 JSONL 信箱（.mailboxes/*.jsonl）
 // ============================================================
 
+// 队友名会拼进信箱文件名，先按白名单校验字符。
+const VALID_AGENT_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+function validateAgentId(agentId: string): void {
+  if (agentId === '.' || agentId === '..' || !VALID_AGENT_ID.test(agentId)) {
+    throw new Error(`非法队友名: '${agentId}'（只允许字母、数字、点、下划线、短横线，1-64 字符）`);
+  }
+}
+
 /**
  * 文件消息总线：每个 Agent 一个 `.jsonl` 信箱，一行一条 JSON 消息。
  *   send()       —— 追加一行（真实写文件）
@@ -101,6 +110,7 @@ class MessageBus {
   }
 
   private inboxPath(agentId: string): string {
+    validateAgentId(agentId);
     return path.join(MAILBOXES_DIR, `${agentId}.jsonl`);
   }
 
@@ -379,6 +389,14 @@ function teammateSystemPrompt(agentId: string, role: string): string {
   return `你是 '${agentId}'，一名${role}。用工具完成任务，并通过 send_message 把结果发给 '${LEAD_ID}'。`;
 }
 
+// 安全路径校验：把参数解析到工作区内；越界（含同前缀的兄弟目录）即抛错。
+function safePath(p: string): string {
+  const resolved = path.resolve(WORKSPACE_ROOT, p);
+  const rel = path.relative(WORKSPACE_ROOT, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error(`路径越界: ${p}`);
+  return resolved;
+}
+
 const s15Handlers: EffectHandlers<S15Effect> = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const { messages, agentId } = effect.input;
@@ -401,7 +419,7 @@ const s15Handlers: EffectHandlers<S15Effect> = {
 
   ReadFile: async (effect: ReadFileEffect): Promise<string> => {
     try {
-      const lines = fs.readFileSync(path.resolve(effect.input.path), 'utf8').split('\n');
+      const lines = fs.readFileSync(safePath(effect.input.path), 'utf8').split('\n');
       if (effect.input.limit && effect.input.limit < lines.length) {
         return [...lines.slice(0, effect.input.limit), `... (${lines.length - effect.input.limit} more lines)`].join('\n');
       }
@@ -413,7 +431,7 @@ const s15Handlers: EffectHandlers<S15Effect> = {
 
   WriteFile: async (effect: WriteFileEffect): Promise<string> => {
     try {
-      const target = path.resolve(effect.input.path);
+      const target = safePath(effect.input.path);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, effect.input.content, 'utf8');
       return `Wrote ${effect.input.content.length} bytes to ${effect.input.path}`;

@@ -56,6 +56,9 @@ import {
   WORKTREES_DIR,
 } from '../runtime/workspace.ts';
 
+// 本章演示产物目录（工作区相对路径，已 gitignore）。
+const OUTPUT_DIR = './s20_comprehensive/.output';
+
 // ============================================================
 // Part 0: 常量 / 小工具
 // ============================================================
@@ -408,6 +411,20 @@ function formatTaskList(tasks: (TaskRecord & { worktree?: string | null })[]): s
 const VALID_WT_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 const worktreePaths = new Map<string, string>();
 
+// 落盘文件名由工具调用 id / 记忆键名拼成，先净化。
+function sanitizeFilePart(s: string): string {
+  return s.replace(/[^A-Za-z0-9_-]/g, '_') || 'unknown';
+}
+
+// 队友名会拼进信箱文件名，先按白名单校验字符。
+const VALID_AGENT_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+function validateAgentId(agentId: string): void {
+  if (agentId === '.' || agentId === '..' || !VALID_AGENT_ID.test(agentId)) {
+    throw new Error(`非法队友名: '${agentId}'（只允许字母、数字、点、下划线、短横线，1-64 字符）`);
+  }
+}
+
 function runGit(args: string[], cwd: string = WORKSPACE_ROOT): { ok: boolean; out: string } {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
@@ -506,7 +523,7 @@ function readMemoryFile(query?: string): string {
 }
 function writeMemory(key: string, content: string): string {
   fs.mkdirSync(MEMORY_DIR, { recursive: true });
-  const file = path.join(MEMORY_DIR, `${key}.md`);
+  const file = path.join(MEMORY_DIR, `${sanitizeFilePart(key)}.md`);
   fs.writeFileSync(file, content, 'utf8');
   fs.appendFileSync(MEMORY_INDEX_PATH, `- ${key}: ${content.slice(0, 120)}\n`, 'utf8');
   return `Saved memory '${key}' → ${file}`;
@@ -780,6 +797,7 @@ class MessageBus {
   private readonly mutex = new Mutex();
   private seq = 0;
   private inboxPath(agentId: string): string {
+    validateAgentId(agentId);
     return path.join(MAILBOXES_DIR, `${agentId}.jsonl`);
   }
   async send(
@@ -1126,8 +1144,8 @@ function mockLead(messages: Message[]): LLMResponse {
           textBlock('完成任务并产出文档（本轮会触发一次 429，由退避重试恢复）。'),
           toolUse('L6a', 'complete_task', { taskId: a }),
           toolUse('L6b', 'complete_task', { taskId: b }),
-          toolUse('L6c', 'write_file', { path: 'docs/report.md', content: '# 认证重构报告\n\n1. 适配器接口\n2. token 刷新\n' }),
-          toolUse('L6d', 'glob', { pattern: 'docs/*.md' }),
+          toolUse('L6c', 'write_file', { path: `${OUTPUT_DIR}/report.md`, content: '# 认证重构报告\n\n1. 适配器接口\n2. token 刷新\n' }),
+          toolUse('L6d', 'glob', { pattern: `${OUTPUT_DIR}/*.md` }),
         ],
       });
     case 7:
@@ -1135,8 +1153,8 @@ function mockLead(messages: Message[]): LLMResponse {
         stop_reason: 'tool_use',
         content: [
           textBlock('修订文档、读取文档，并派发子代理编写单元测试。'),
-          toolUse('L7a', 'edit_file', { path: 'docs/report.md', oldText: '2. token 刷新', newText: '2. token 刷新（含 PKCE）' }),
-          toolUse('L7b', 'read_file', { path: 'docs/report.md' }),
+          toolUse('L7a', 'edit_file', { path: `${OUTPUT_DIR}/report.md`, old_text: '2. token 刷新', new_text: '2. token 刷新（含 PKCE）' }),
+          toolUse('L7b', 'read_file', { path: `${OUTPUT_DIR}/report.md` }),
           toolUse('L7c', 'task', { description: '为认证适配器编写单元测试' }),
         ],
       });
@@ -1244,7 +1262,7 @@ function mockTeammate(): LLMResponse {
         content: [
           textBlock(`认领并动手处理任务 ${d}。`),
           toolUse('T2a', 'claim_task', { taskId: d }),
-          toolUse('T2b', 'write_file', { path: 'docs/worker-note.md', content: '# 迁移说明\n\n1. 更新依赖\n2. 切换 OAuth2\n' }),
+          toolUse('T2b', 'write_file', { path: `${OUTPUT_DIR}/worker-note.md`, content: '# 迁移说明\n\n1. 更新依赖\n2. 切换 OAuth2\n' }),
         ],
       };
     }
@@ -1595,18 +1613,24 @@ const s20Handlers: EffectHandlers<S20Effect> = {
 
   PersistOutput: async (effect: PersistOutputEffect): Promise<string> => {
     fs.mkdirSync(TOOL_RESULTS_DIR, { recursive: true });
-    const file = path.join(TOOL_RESULTS_DIR, `${effect.input.toolUseId}.txt`);
+    const file = path.join(TOOL_RESULTS_DIR, `${sanitizeFilePart(effect.input.toolUseId)}.txt`);
     fs.writeFileSync(file, effect.input.content, 'utf8');
     console.log(`  \x1b[33m[PersistOutput] ${effect.input.content.length} 字符 → ${file}\x1b[0m`);
     return `<persisted-output>\nFull output: ${file}\nPreview:\n${effect.input.content.slice(0, 2000)}\n</persisted-output>`;
   },
 
   BashExec: async (effect: BashExecEffect): Promise<string> => {
-    const cwd = effect.input.worktreeId ? worktreePaths.get(effect.input.worktreeId) : undefined;
-    console.log(`[BashExec] → ${effect.input.command}${cwd ? ` (cwd=${cwd})` : ''}`);
+    const wtId = effect.input.worktreeId;
+    const wtPath = wtId ? worktreePaths.get(wtId) : undefined;
+    // worktreeId 必须是本次运行创建过的名字，否则报错。
+    if (wtId && !wtPath) {
+      return `Error: unknown worktreeId '${wtId}'（已知: ${[...worktreePaths.keys()].join(', ') || '无'}）`;
+    }
+    const cwd = wtPath ?? WORKSPACE_ROOT;
+    console.log(`[BashExec] → ${effect.input.command}${wtPath ? ` (cwd=${wtPath})` : ''}`);
     const r = spawnSync(effect.input.command, {
       shell: true,
-      cwd: cwd ?? WORKSPACE_ROOT,
+      cwd,
       encoding: 'utf8',
       timeout: 120000,
       maxBuffer: 16 * 1024 * 1024,
@@ -1630,8 +1654,9 @@ const s20Handlers: EffectHandlers<S20Effect> = {
 
   WriteFile: async (effect: WriteFileEffect): Promise<string> => {
     try {
-      const base = effect.input.worktreeId ? worktreePaths.get(effect.input.worktreeId) ?? WORKSPACE_ROOT : WORKSPACE_ROOT;
-      const target = safeChildPath(base, effect.input.path);
+      const base = effect.input.worktreeId ? worktreePaths.get(effect.input.worktreeId) : undefined;
+      if (effect.input.worktreeId && !base) return `Error: unknown worktreeId '${effect.input.worktreeId}'`;
+      const target = safeChildPath(base ?? WORKSPACE_ROOT, effect.input.path);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, effect.input.content, 'utf8');
       return `Wrote ${effect.input.content.length} bytes to ${effect.input.path}`;
@@ -2314,7 +2339,8 @@ fs.writeFileSync(path.join(MAILBOXES_DIR, `${WORKER_ID}.jsonl`), '', 'utf8');
 
 console.log('[S20] Comprehensive — 整合 Harness 启动');
 console.log(`  模式: ${resolveMode()}  工作区: ${WORKSPACE_ROOT}`);
-console.log(`  任务: ${TASKS_DIR}  信箱: ${MAILBOXES_DIR}  worktree: ${WORKTREES_DIR}\n`);
+console.log(`  任务: ${TASKS_DIR}  信箱: ${MAILBOXES_DIR}  worktree: ${WORKTREES_DIR}`);
+console.log(`  演示产物: ${OUTPUT_DIR}（已在 .gitignore 忽略）\n`);
 
 loadDurableJobs();
 startCronScheduler();

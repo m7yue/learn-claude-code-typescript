@@ -151,27 +151,28 @@ function logEvent(type: 'create' | 'bind' | 'remove' | 'keep', worktree: string,
 }
 ```
 
-本次演示的事件流（创建 → 绑定 → 移除）：
+本次演示的事件流（创建 → 绑定 → 保留 → 移除）：
 
 ```
 10:16:22 create auth
 10:16:22 create ui
 10:16:22 bind   auth ← task_1791886581_5883
 10:16:22 bind   ui ← task_1791886581_9740
+10:16:22 keep   auth
 10:16:22 remove ui
 10:16:22 remove auth
 ```
 
-### 可重复运行：启动与退出双重清理
+### 可重复运行：按登记簿清理，不扫荡别人的 worktree
 
-`cleanupWorktrees()` 在启动和结束（`finally`）各执行一次：
+`worktreePaths`（name → 路径）登记**本次运行**真实创建的 worktree，`cleanupWorktrees()` 只在退出（`finally`）时清登记簿上的条目：
 
-1. `git worktree list --porcelain` → 删除位于 `.worktrees/` 下的已注册 worktree（保留主工作区）；
-2. `git worktree prune` → 清理失效的管理数据；
-3. 删除 `.worktrees/` 下残留的物理目录；
-4. `git for-each-ref refs/heads/wt/` → `git branch -D wt/<name>`。
+1. 登记过的逐个 `git worktree remove --force`，目录还在就再删一次兜底；
+2. 同名分支 `git branch -D wt/<name>`；
+3. `keep_worktree` 明确保留的名字跳过（显式的 `remove_worktree` 仍然生效）；
+4. 最后 `git worktree prune` 清一次失效的管理数据。
 
-因此连续运行不会向上累积 worktree 或分支，仓库始终干净。
+手工创建的 worktree、仓库里其它 `wt/*` 分支、别人放在 `.worktrees/` 下的目录都不在清理范围内。启动时不再扫荡，只打印一条残留提示；需要同名 worktree 时，`create_worktree` 会先清掉这份同名残留再创建。因此正常结束的连续运行不会向上累积 worktree 或分支，异常中断留下的残留也不会被误删。
 
 ---
 
@@ -184,6 +185,7 @@ function logEvent(type: 'create' | 'bind' | 'remove' | 'keep', worktree: string,
 | `create_worktree` | 校验名称 → `git worktree add ... -b wt/<name> HEAD`；带 `taskId` 时一并绑定任务 |
 | `bind_worktree` | 单独把任务绑到已存在的 worktree（写 `worktree` 字段，保持 `pending`） |
 | `remove_worktree` | 变更守卫 → `git worktree remove --force` + `git branch -D`；`discard_changes` 可强制 |
+| `keep_worktree` | 保留 worktree 供人工审查：不动目录与分支，只记 `keep` 事件，并让退出时的自动清理跳过它 |
 
 > 分支名统一派生为 `wt/<worktreeId>`，不由模型指定。
 
@@ -258,9 +260,9 @@ function validateWorktreeName(name: string): string | null {
 ### 三、孤立 worktree 清理
 
 CC 启动时扫描所有存在的 worktree，与任务系统对比：有活跃任务则保留（`keep`），
-孤立则清理（`remove`）。本章的 `cleanupWorktrees()` 采取更激进的策略——启动与退出时
-清空本章管理的 worktree，保证演示可重复；`events.jsonl` 的 `keep` 类型为此类"保留审查"
-场景预留（本章不主动产生）。
+孤立则清理（`remove`）。本章按**本次运行的登记簿**清理：只处理这次真正创建过的
+worktree（`keep_worktree` 保留的除外），启动时对上次残留只提示不删除，按需在
+`create_worktree` 时清掉同名残留——不碰手工创建的 worktree 和其它 `wt/*` 分支。
 
 ### 四、worktree 与 subagent 的组合
 
@@ -274,7 +276,7 @@ CC 的 Worktree 和 Subagent（s06）通常组合使用：主 Agent 管理任务
 |------|------|-----|
 | Worktree 创建 | 真实 `git worktree add -b wt/<name>` | 真实 `git worktree add` |
 | 路径安全检查 | `validateWorktreeName` | 防穿越验证 |
-| 孤立清理 | 启动/退出 `cleanupWorktrees` + `prune` | 启动扫描 + `keep`/`remove` 决策 |
+| 孤立清理 | 按本次运行的登记簿清理 + `prune`；`keep_worktree` 的保留会跳过 | 启动扫描 + `keep`/`remove` 决策 |
 | 与 subagent 组合 | 单 Agent 多 worktree | 每个 worktree 常配一个子 Agent |
 | 事件日志 | `create`/`bind`/`remove`/`keep` | 含 `keep` 的完整生命周期 |
 

@@ -155,6 +155,8 @@ npm run s02
 输出示例：
 ```
 [S02] Tool Use 启动
+工作区: /path/to/learn-claude-code-typescript
+产物目录: ./s02_tool_use/.output（已在 .gitignore 忽略）
 
 [Chat] → 发送 1 条消息...
 [LLM]  ← stop_reason: tool_use, 工具: read_file, glob
@@ -164,11 +166,11 @@ npm run s02
 [GlobSearch] ← 68 个文件
 [Chat] → 发送 3 条消息...
 [LLM]  ← stop_reason: tool_use, 工具: write_file
-[WriteFile] → ./s02_output.txt
+[WriteFile] → ./s02_tool_use/.output/s02_output.txt
 [Chat] → 发送 5 条消息...
 [LLM]  ← stop_reason: end_turn
 
-[S02] 完成: 已读取 package.json 并写入摘要到 ./s02_output.txt
+[S02] 完成: 已读取 package.json 并写入摘要到 ./s02_tool_use/.output/s02_output.txt
 ```
 
 > `GlobSearch` 会真正按 `pattern` 在工作区（`WORKSPACE_ROOT`）内递归匹配，

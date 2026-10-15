@@ -9,6 +9,7 @@
  */
 
 import { describeMode, resolveMode } from "../runtime/env.ts";
+import { WORKSPACE_ROOT } from "../runtime/workspace.ts";
 import { agentLoop, createCoreHandlers, runAgent } from "./core/agent.ts";
 import { createModel } from "./core/anthropic-model.ts";
 import { ScriptedModel, finalTurn, toolTurn } from "./core/scripted-model.ts";
@@ -16,7 +17,8 @@ import type { Message } from "./core/types.ts";
 import { createTeachingHarness } from "./modules/comprehensive.ts";
 import { buildHarnessTools } from "./modules/harness-tools.ts";
 
-const cwd = process.cwd();
+// 工作区根目录（可用 AGENT_WORKSPACE 覆盖）。
+const cwd = WORKSPACE_ROOT;
 const harness = createTeachingHarness(cwd);
 
 // 工具定义与执行器一起从 runtime 注册表派生（base + 任务 + 团队 + 待办）。

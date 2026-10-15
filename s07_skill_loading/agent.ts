@@ -100,6 +100,15 @@ function mockLLM(messages: Message[], skillDir: string): LLMResponse {
   };
 }
 
+// 技能名白名单：只接受安全字符组成的、已注册的名字（skills/ 下有目录，或内置注册表里有）。
+const SKILL_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+function isKnownSkill(name: string): boolean {
+  if (name === '.' || name === '..' || !SKILL_NAME_RE.test(name)) return false;
+  if (Object.prototype.hasOwnProperty.call(SKILL_REGISTRY_FALLBACK, name)) return true;
+  return fs.existsSync(path.join(SKILLS_DIR, name, 'SKILL.md'));
+}
+
 const s07Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const { messages, systemPrompt } = effect.input;
@@ -146,6 +155,9 @@ const s07Handlers = {
 
   LoadSkill: async (effect: LoadSkillEffect): Promise<string> => {
     const { name } = effect.input;
+    if (!isKnownSkill(name)) {
+      return `[错误] 未知技能: ${name}（只接受 skills/ 下已注册的技能名）`;
+    }
     const skillPath = path.join(SKILLS_DIR, name, 'SKILL.md');
     if (fs.existsSync(skillPath)) {
       const content = fs.readFileSync(skillPath, 'utf8');

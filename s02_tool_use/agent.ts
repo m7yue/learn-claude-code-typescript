@@ -57,6 +57,10 @@ type S02Effect =
 // 可被 AGENT_WORKSPACE 覆盖，从而让 e2e 把副作用隔离到临时目录）。
 const WORKDIR = WORKSPACE_ROOT;
 
+// 本章演示产物目录（工作区相对路径，已 gitignore）。
+const OUTPUT_DIR = './s02_tool_use/.output';
+const OUTPUT_FILE = `${OUTPUT_DIR}/s02_output.txt`;
+
 // 安全路径校验：把参数解析到工作区内；越界（含同前缀的兄弟目录）即抛错。
 function safePath(p: string): string {
   const resolved = path.resolve(WORKDIR, p);
@@ -141,7 +145,7 @@ function mockLLM(messages: Message[]): LLMResponse {
           type: 'tool_use',
           id: 'tool_003',
           name: 'write_file',
-          input: { path: './s02_output.txt', content: '摘要: 项目包含多个 TypeScript 文件' },
+          input: { path: OUTPUT_FILE, content: '摘要: 项目包含多个 TypeScript 文件' },
         },
       ],
     };
@@ -150,7 +154,7 @@ function mockLLM(messages: Message[]): LLMResponse {
   // 第3轮：完成
   return {
     stop_reason: 'end_turn',
-    content: [{ type: 'text', text: '已读取 package.json 并写入摘要到 ./s02_output.txt' }],
+    content: [{ type: 'text', text: `已读取 package.json 并写入摘要到 ${OUTPUT_FILE}` }],
   };
 }
 
@@ -246,7 +250,7 @@ const s02Handlers = {
 
 function* agentLoop(perform: PerformFn<S02Effect>) {
   const messages: Message[] = [
-    { role: 'user', content: '读取 package.json 的前5行，然后把摘要写入 ./s02_output.txt' },
+    { role: 'user', content: `读取 package.json 的前5行，然后把摘要写入 ${OUTPUT_FILE}` },
   ];
 
   while (true) {
@@ -332,7 +336,9 @@ function* agentLoop(perform: PerformFn<S02Effect>) {
 // Part 4: 启动入口
 // ============================================================
 
-console.log('[S02] Tool Use 启动\n');
+console.log('[S02] Tool Use 启动');
+console.log(`工作区: ${WORKDIR}`);
+console.log(`产物目录: ${OUTPUT_DIR}（已在 .gitignore 忽略）\n`);
 
 const result = await runAgent<S02Effect, string>(agentLoop, s02Handlers);
 

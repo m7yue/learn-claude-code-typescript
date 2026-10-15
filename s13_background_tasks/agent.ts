@@ -60,9 +60,9 @@ import type {
 import { extractText, getToolUseBlocks, messageText } from '../runtime/response.ts';
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
-import { buildSystemPrompt, WORKDIR } from '../runtime/system-prompt.ts';
+import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import { Mutex } from '../runtime/locks.ts';
-import { TASKS_DIR } from '../runtime/workspace.ts';
+import { TASKS_DIR, WORKSPACE_ROOT } from '../runtime/workspace.ts';
 
 // ============================================================
 // Part 1: Effect 类型定义
@@ -91,8 +91,8 @@ type S13Effect =
 // ============================================================
 
 function safePath(p: string): string {
-  const resolved = path.resolve(WORKDIR, p);
-  const rel = path.relative(WORKDIR, resolved);
+  const resolved = path.resolve(WORKSPACE_ROOT, p);
+  const rel = path.relative(WORKSPACE_ROOT, resolved);
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`Path escapes workspace: ${p}`);
   }

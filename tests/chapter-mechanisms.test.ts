@@ -22,25 +22,43 @@ interface Check {
   /** 该机制的人类可读描述，失败时用于报错。 */
   what: string;
   /** 关键代码痕迹（正则，对源码全文）。 */
-  match: RegExp;
+  match?: RegExp;
+  /** 改法回退的标志（正则，命中即失败）；用于守住"旧写法不许回来"。 */
+  absent?: RegExp;
 }
+
+/** 全仓章节清单（多处断言共用）。 */
+const chapters = [
+  "s01_agent_loop", "s02_tool_use", "s03_permission", "s04_hooks", "s05_todo_write",
+  "s06_subagent", "s07_skill_loading", "s08_context_compact", "s09_memory", "s10_system_prompt",
+  "s11_error_recovery", "s12_task_system", "s13_background_tasks", "s14_cron_scheduler",
+  "s15_agent_teams", "s16_team_protocols", "s17_autonomous_agents", "s18_worktree_isolation",
+  "s19_mcp_plugin", "s20_comprehensive",
+];
 
 /** 每个章节 README 声明的、必须真实存在的机制。 */
 const expectations: Record<string, Check[]> = {
   "s02_tool_use": [
     { what: "GlobSearch 真正使用 pattern（glob→regex）", match: /globToRegExp/ },
-    { what: "mock 写入工作区相对路径，不再写 /tmp", match: /s02_output\.txt/ },
+    { what: "演示产物目录锚定章节目录（s02_tool_use/.output，不再写仓库根）", match: /'\.\/s02_tool_use\/\.output'/ },
+    { what: "写出的仍是 s02_output.txt", match: /s02_output\.txt/ },
+  ],
+  "s07_skill_loading": [
+    { what: "load_skill 先过名字白名单再拼路径", match: /isKnownSkill\(name\)[\s\S]{0,300}?path\.join\(SKILLS_DIR/ },
+    { what: "技能名白名单正则", match: /SKILL_NAME_RE/ },
   ],
   "s08_context_compact": [
     { what: "摘要走真实 LLM 调用", match: /callChat\(\s*mockSummarizer/ },
     { what: "transcript 落盘 .transcripts/", match: /TRANSCRIPTS_DIR/ },
     { what: "工具结果落盘 .task_outputs/tool-results/", match: /TOOL_RESULTS_DIR/ },
+    { what: "落盘文件名里的 toolUseId 先净化再拼路径", match: /sanitizeFilePart\(toolUseId\)/ },
   ],
   "s09_memory": [
     { what: "select/extract/consolidate 都是真实 LLM 调用", match: /mockSelector/ },
     { what: "每轮抽取记忆", match: /ExtractMemories/ },
     { what: "记忆合并", match: /ConsolidateMemories/ },
     { what: "记忆文件落在工作区 .memory/", match: /MEMORY_DIR/ },
+    { what: "写记忆文件前先解析路径并挡越界（不只靠 slugify）", match: /memoryFilePath\(filename\)/ },
   ],
   "s11_error_recovery": [
     { what: "按 name/message 字符串分类错误", match: /classifyError/ },
@@ -59,6 +77,7 @@ const expectations: Record<string, Check[]> = {
     { what: "后台任务注册表 + 锁", match: /Mutex/ },
     { what: "任务通知 <task_notification>", match: /task_notification/ },
     { what: "run_in_background 触发后台", match: /run_in_background/ },
+    { what: "路径基准取 WORKSPACE_ROOT（不从提示词借 process.cwd）", match: /path\.relative\(WORKSPACE_ROOT, resolved\)/ },
   ],
   "s14_cron_scheduler": [
     { what: "真实调度循环 setInterval", match: /setInterval/ },
@@ -71,16 +90,25 @@ const expectations: Record<string, Check[]> = {
     { what: "队友是独立子 loop（再次调用 runAgent）", match: /runAgent/ },
     { what: "信箱落在工作区 .mailboxes/", match: /MAILBOXES_DIR/ },
     { what: "JSONL 信箱格式", match: /\.jsonl/ },
+    { what: "文件工具的 safePath 以 WORKSPACE_ROOT 为基", match: /function safePath\(p: string\): string \{[\s\S]{0,300}?path\.relative\(WORKSPACE_ROOT, resolved\)/ },
+    { what: "文件工具确实经 safePath", match: /safePath\(effect\.input\.path\)/ },
+    { what: "模型给的路径不再直接 resolve 到进程 cwd", absent: /path\.resolve\(effect\.input\.path\)/ },
+    { what: "信箱名先过白名单校验再拼路径", match: /validateAgentId\(agentId\)/ },
   ],
   "s16_team_protocols": [
     { what: "request_id 匹配的响应校验", match: /matchResponse/ },
     { what: "待处理请求表", match: /pendingRequests/ },
     { what: "真实 requestId", match: /requestId/ },
+    { what: "文件工具的 safePath 以 WORKSPACE_ROOT 为基", match: /function safePath\(p: string\): string \{[\s\S]{0,300}?path\.relative\(WORKSPACE_ROOT, resolved\)/ },
+    { what: "文件工具确实经 safePath", match: /safePath\(effect\.input\.path\)/ },
+    { what: "模型给的路径不再直接 resolve 到进程 cwd", absent: /path\.resolve\(effect\.input\.path\)/ },
+    { what: "信箱名先过白名单校验再拼路径", match: /validateAgentId\(agentId\)/ },
   ],
   "s17_autonomous_agents": [
     { what: "WORK/IDLE/SHUTDOWN 状态机", match: /WorkerState/ },
     { what: "idle_poll 空闲轮询", match: /IdlePoll/ },
     { what: "自主扫描并认领任务", match: /scanUnclaimed|autoClaim/ },
+    { what: "信箱名先过白名单校验再拼路径", match: /validateAgentId\(agentId\)/ },
   ],
   "s18_worktree_isolation": [
     { what: "真实 git worktree add", match: /\['worktree',\s*'add'/ },
@@ -89,6 +117,10 @@ const expectations: Record<string, Check[]> = {
     { what: "改动计数守卫", match: /discardChanges/ },
     { what: "事件日志 events.jsonl", match: /WORKTREE_EVENTS_PATH/ },
     { what: "keep_worktree 保留审查", match: /keep_worktree|KeepWorktree/ },
+    { what: "清理只遍历本次运行的登记簿", match: /function cleanupWorktrees\(\)[\s\S]{0,700}?worktreePaths/ },
+    { what: "keep_worktree 的保留会跳过自动清理", match: /keptWorktrees/ },
+    { what: "不再全仓扫荡 wt/* 分支", absent: /refs\/heads\/wt\// },
+    { what: "未知 worktreeId 不静默回落到工作区根", match: /!\s*worktreePaths\.has\(wtId\)/ },
   ],
   "s20_comprehensive": [
     { what: "错误分类复用 runtime/errors", match: /classifyError/ },
@@ -96,6 +128,10 @@ const expectations: Record<string, Check[]> = {
     { what: "真实 git worktree", match: /\['worktree',\s*'add'/ },
     { what: "request_id 协议状态机", match: /matchResponse/ },
     { what: "计划审批是真实闸门", match: /submit_plan|SubmitPlan/ },
+    { what: "演示产物目录锚定章节目录（s20_comprehensive/.output，不写进 docs/）", match: /'\.\/s20_comprehensive\/\.output'/ },
+    { what: "mock 的 edit_file 用 snake_case 键（与工具 schema 一致，否则编辑静默失效）", match: /'edit_file',[^\n]*old_text:/ },
+    { what: "落盘文件名先净化（toolUseId / 记忆键名）", match: /sanitizeFilePart\(/ },
+    { what: "信箱名先过白名单校验再拼路径", match: /validateAgentId\(agentId\)/ },
   ],
 };
 
@@ -103,20 +139,27 @@ for (const [dir, checks] of Object.entries(expectations)) {
   test(`机制守卫: ${dir}`, async () => {
     const source = await readFile(join(root, dir, "agent.ts"), "utf8");
     const missing = checks
-      .filter((c) => !c.match.test(source))
+      .filter((c) => (c.match ? !c.match.test(source) : false) || (c.absent ? c.absent.test(source) : false))
       .map((c) => c.what);
-    assert.deepEqual(missing, [], `${dir} 缺少以下真实机制:\n${missing.join("\n")}`);
+    assert.deepEqual(missing, [], `${dir} 缺少以下真实机制（或旧写法又回来了）:\n${missing.join("\n")}`);
   });
 }
 
+test("章节不再以 process.cwd() 作为工作区基准（注释里的说明不算）", async () => {
+  const offenders: string[] = [];
+  for (const dir of chapters) {
+    const raw = await readFile(join(root, dir, "agent.ts"), "utf8");
+    const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    if (/process\.cwd\(\)/.test(code)) offenders.push(dir);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `以下章节仍以 process.cwd() 为工作区基准（应改用 runtime/workspace.ts 的 WORKSPACE_ROOT）:\n${offenders.join("\n")}`,
+  );
+});
+
 test("全仓章节不再把持久化写到 os.tmpdir()", async () => {
-  const chapters = [
-    "s01_agent_loop", "s02_tool_use", "s03_permission", "s04_hooks", "s05_todo_write",
-    "s06_subagent", "s07_skill_loading", "s08_context_compact", "s09_memory", "s10_system_prompt",
-    "s11_error_recovery", "s12_task_system", "s13_background_tasks", "s14_cron_scheduler",
-    "s15_agent_teams", "s16_team_protocols", "s17_autonomous_agents", "s18_worktree_isolation",
-    "s19_mcp_plugin", "s20_comprehensive",
-  ];
   const offenders: string[] = [];
   for (const dir of chapters) {
     const source = await readFile(join(root, dir, "agent.ts"), "utf8");

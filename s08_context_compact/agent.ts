@@ -302,6 +302,11 @@ function mockLLM(): LLMResponse {
   };
 }
 
+// 落盘文件名由工具调用 id 拼成，先净化再拼路径。
+function sanitizeFilePart(s: string): string {
+  return s.replace(/[^A-Za-z0-9_-]/g, '_') || 'unknown';
+}
+
 const s08Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const { messages } = effect.input;
@@ -334,7 +339,7 @@ const s08Handlers = {
   PersistOutput: async (effect: PersistOutputEffect): Promise<string> => {
     const { toolUseId, content } = effect.input;
     fs.mkdirSync(TOOL_RESULTS_DIR, { recursive: true });
-    const filePath = path.join(TOOL_RESULTS_DIR, `${toolUseId}.txt`);
+    const filePath = path.join(TOOL_RESULTS_DIR, `${sanitizeFilePart(toolUseId)}.txt`);
     if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, content, 'utf8');
     console.log(`[L3 Persist] 大输出写入磁盘: ${filePath} (${content.length} 字符)`);
     return `<persisted-output>\nFull output: ${filePath}\nPreview:\n${content.slice(0, 2000)}\n</persisted-output>`;

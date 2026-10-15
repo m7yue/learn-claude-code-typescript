@@ -22,3 +22,6 @@ coverage/
 .mailboxes/
 .worktrees/
 .scheduled_tasks.json
+
+# Chapter demo artifacts（各章演示产物，落在章节目录下的 .output/）
+.output/

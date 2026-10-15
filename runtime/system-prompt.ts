@@ -8,8 +8,10 @@
  * 各章在此基础句上追加自己的子句，避免逐章重复工作目录与环境措辞。
  */
 
-/** 当前工作目录（模块加载时求值一次）。 */
-export const WORKDIR: string = process.cwd();
+import { WORKSPACE_ROOT } from "./workspace.ts";
+
+/** 工作目录 = 工作区根目录（AGENT_WORKSPACE 可覆盖，模块加载时求值一次）。 */
+export const WORKDIR: string = WORKSPACE_ROOT;
 
 /** 按运行平台给出的环境说明。 */
 export const ENVIRONMENT_PROMPT: string =
