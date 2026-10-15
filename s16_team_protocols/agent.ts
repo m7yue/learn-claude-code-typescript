@@ -450,11 +450,12 @@ function mockModel(agentId: string, messages: Message[]): LLMResponse {
 
 /** real 模式注入的 system prompt；mock 模式不读取，故零配置运行行为不变。 */
 const LEAD_SYSTEM_PROMPT = buildSystemPrompt(
-  '用 spawn_teammate 组建计划团队；用 request_plan 请求计划并等待带同一 request_id 的审批响应；用 request_shutdown 申请关闭并等待 shutdown_response。每一步都等响应到达再继续，不要跳过协议。',
+  '用 spawn_teammate 组建计划团队；用 request_plan 请求计划并等待带同一 request_id 的审批响应；用 request_shutdown 申请关闭并等待 shutdown_response。每一步都等响应到达再继续，不要跳过协议。' +
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。',
 );
 
 function teammateSystemPrompt(agentId: string, role: string): string {
-  return `你是 '${agentId}'，一名${role}。收到信箱里的 plan_request 后生成执行计划并调用 review_plan（带上消息里的 request_id）把审批结果回传 lead（它的信箱是 '${LEAD_ID}'）；收到 shutdown_request 后发送 shutdown_response 再退出。`;
+  return `你是 '${agentId}'，一名${role}。收到信箱里的 plan_request 后生成执行计划并调用 review_plan（带上消息里的 request_id）把审批结果回传 lead（它的信箱是 '${LEAD_ID}'）；收到 shutdown_request 后发送 shutdown_response 再退出。本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。`;
 }
 
 // ============================================================

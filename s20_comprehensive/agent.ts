@@ -139,7 +139,7 @@ interface AssemblePromptEffect extends Effect<'AssemblePrompt', { context: Promp
 interface AssembleToolPoolEffect extends Effect<'AssembleToolPool', Record<string, never>, ToolSchema[]> {}
 
 interface PrepareContextEffect
-  extends Effect<'PrepareContext', { messages: Message[]; force?: boolean; reactive?: boolean }, Message[]> {}
+  extends Effect<'PrepareContext', { messages: Message[]; force?: boolean; reactive?: boolean; reason?: string }, Message[]> {}
 interface PersistOutputEffect extends Effect<'PersistOutput', { toolUseId: string; content: string }, string> {}
 
 interface BashExecEffect extends Effect<'BashExec', { command: string; worktreeId?: string }, string> {}
@@ -158,7 +158,7 @@ interface TodoWriteEffect extends Effect<'TodoWrite', { todos: TodoItem[] }, str
 interface SpawnSubagentEffect extends Effect<'SpawnSubagent', { description: string }, string> {}
 interface LoadSkillEffect extends Effect<'LoadSkill', { name: string }, string> {}
 
-interface ReadMemoryEffect extends Effect<'ReadMemory', { query?: string }, string> {}
+interface ReadMemoryEffect extends Effect<'ReadMemory', { query?: string; filename?: string }, string> {}
 interface WriteMemoryEffect extends Effect<'WriteMemory', { key: string; content: string }, string> {}
 
 interface CreateTaskEffect
@@ -457,7 +457,8 @@ function logWorktreeEvent(eventType: string, name: string, taskId = ''): void {
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
   fs.appendFileSync(
     WORKTREE_EVENTS_PATH,
-    JSON.stringify({ type: eventType, worktree: name, taskId, timestamp: Date.now() }) + '\n',
+    // 字段名与 s18 的读取方对齐：task_id / ts（秒），两章写的是同一个 .worktrees/events.jsonl
+    JSON.stringify({ type: eventType, worktree: name, task_id: taskId, ts: Date.now() / 1000 }) + '\n',
     'utf8',
   );
 }
@@ -513,8 +514,13 @@ function cleanupAllWorktrees(): void {
 // Part 4: Knowledge —— Memory(s09) / Skill(s07) / Todo(s05)
 // ============================================================
 
-function readMemoryFile(query?: string): string {
+/** 按文件名读单条记忆（s09 方言）；不传文件名时按关键词检索索引（s20 方言）。 */
+function readMemoryFile(query?: string, filename?: string): string {
   fs.mkdirSync(MEMORY_DIR, { recursive: true });
+  if (filename) {
+    const file = path.join(MEMORY_DIR, `${sanitizeFilePart(filename)}.md`);
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : `（没有名为 "${filename}" 的记忆）`;
+  }
   if (!fs.existsSync(MEMORY_INDEX_PATH)) return '（无历史记忆）';
   const content = fs.readFileSync(MEMORY_INDEX_PATH, 'utf8');
   if (!query) return content.slice(0, 2000);
@@ -1155,7 +1161,7 @@ function mockLead(messages: Message[]): LLMResponse {
           textBlock('修订文档、读取文档，并派发子代理编写单元测试。'),
           toolUse('L7a', 'edit_file', { path: `${OUTPUT_DIR}/report.md`, old_text: '2. token 刷新', new_text: '2. token 刷新（含 PKCE）' }),
           toolUse('L7b', 'read_file', { path: `${OUTPUT_DIR}/report.md` }),
-          toolUse('L7c', 'task', { description: '为认证适配器编写单元测试' }),
+          toolUse('L7c', 'task', { task: '为认证适配器编写单元测试' }),
         ],
       });
     case 8:
@@ -1214,7 +1220,7 @@ function mockLead(messages: Message[]): LLMResponse {
     case 14:
       return respond({
         stop_reason: 'tool_use',
-        content: [textBlock('列出 cron 并压缩上下文。'), toolUse('L14a', 'list_crons', {}), toolUse('L14b', 'compact', { focus: '认证重构进度' })],
+        content: [textBlock('列出 cron 并压缩上下文。'), toolUse('L14a', 'list_crons', {}), toolUse('L14b', 'compact', { reason: '认证重构进度' })],
       });
     case 15:
       return respond({
@@ -1600,7 +1606,10 @@ const s20Handlers: EffectHandlers<S20Effect> = {
       const tail = msgs.slice(-5);
       return [{ role: 'user', content: '[Reactive compact] 前文已裁剪，从断点继续。' }, ...tail];
     }
-    if (effect.input.force) return await compactHistory(msgs);
+    if (effect.input.force) {
+      console.log(`  [compact] 触发压缩: ${effect.input.reason ?? 'manual'}`);
+      return await compactHistory(msgs);
+    }
     msgs = toolResultBudget(msgs);
     msgs = snipCompact(msgs);
     msgs = microCompact(msgs);
@@ -1700,7 +1709,7 @@ const s20Handlers: EffectHandlers<S20Effect> = {
   },
   LoadSkill: async (effect: LoadSkillEffect): Promise<string> => loadSkill(effect.input.name),
 
-  ReadMemory: async (effect: ReadMemoryEffect): Promise<string> => readMemoryFile(effect.input.query),
+  ReadMemory: async (effect: ReadMemoryEffect): Promise<string> => readMemoryFile(effect.input.query, effect.input.filename),
   WriteMemory: async (effect: WriteMemoryEffect): Promise<string> => writeMemory(effect.input.key, effect.input.content),
 
   CreateTask: async (effect: CreateTaskEffect): Promise<TaskRecord> => {
@@ -2079,7 +2088,10 @@ function* leadLoop(perform: PerformFn<S20Effect>) {
     for (const block of getToolUseBlocks(response)) {
       try {
         if (block.name === 'compact') {
-          messages = yield* perform({ type: 'PrepareContext', input: { messages, force: true } });
+          messages = yield* perform({
+            type: 'PrepareContext',
+            input: { messages, force: true, reason: String(block.input['reason'] ?? 'manual') },
+          });
           messages.push({ role: 'user', content: '[Compacted. Continue with summarized context.]' });
           compactedNow = true;
           break;
@@ -2146,21 +2158,27 @@ function* leadLoop(perform: PerformFn<S20Effect>) {
             break;
           }
           case 'task':
-            output = yield* perform({ type: 'SpawnSubagent', input: { description: String(block.input['description'] ?? '') } });
+            output = yield* perform({ type: 'SpawnSubagent', input: { description: String(block.input['task'] ?? '') } });
             break;
           case 'load_skill':
             output = yield* perform({ type: 'LoadSkill', input: { name: String(block.input['name'] ?? '') } });
             break;
           case 'read_memory': {
-            const input: { query?: string } = {};
+            // schema 同时服务两套方言：s09 按 filename 读单条，s20 按 query 检索；两种都接
+            const input: { query?: string; filename?: string } = {};
             if (block.input['query'] !== undefined) input.query = String(block.input['query']);
+            if (block.input['filename'] !== undefined) input.filename = String(block.input['filename']);
             output = yield* perform({ type: 'ReadMemory', input });
             break;
           }
           case 'write_memory':
             output = yield* perform({
               type: 'WriteMemory',
-              input: { key: String(block.input['key'] ?? 'note'), content: String(block.input['content'] ?? '') },
+              input: {
+                // 同样接两套方言：s09 的 name/body 与 s20 的 key/content
+                key: String(block.input['key'] ?? block.input['name'] ?? 'note'),
+                content: String(block.input['content'] ?? block.input['body'] ?? ''),
+              },
             });
             break;
           case 'create_task': {

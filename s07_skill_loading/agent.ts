@@ -188,7 +188,9 @@ function* agentLoop(perform: PerformFn<S07Effect>) {
   const systemPrompt =
     baseSystemPrompt() +
     '\n\n' +
-    `可用技能：\n${skillDirectory}\n\n当某个技能适用时，用 load_skill 读取完整说明。`;
+    `可用技能：\n${skillDirectory}\n\n当某个技能适用时，用 load_skill 读取完整说明。` +
+    '\n\n' +
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。';
 
   const messages: Message[] = [
     { role: 'user', content: '帮我做一次代码审查，重点检查安全问题。' },

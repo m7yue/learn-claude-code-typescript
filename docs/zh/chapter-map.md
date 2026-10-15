@@ -24,7 +24,7 @@
 | s02 | Tool Use | 工具池、工具分发 | `src/modules/tools.ts` |
 | s03 | Permission | allow / ask / deny 权限边界 | `src/modules/permission.ts` |
 | s04 | Hooks | PreToolUse / PostToolUse / Stop 扩展点 | `src/modules/hooks.ts` |
-| s05 | TodoWrite | 把短期计划写到外部文件 | `src/modules/todos.ts` |
+| s05 | TodoWrite | 把短期计划写成独立于对话历史的结构化状态 | `src/modules/todos.ts` |
 | s06 | Subagent | 独立上下文与摘要返回 | `DelegateEffect` in `src/core/agent.ts` |
 | s07 | Skill Loading | 按需加载能力说明 | `src/modules/skills.ts` |
 | s08 | Context Compact | 上下文压缩与结果裁剪 | `src/modules/compact.ts` |

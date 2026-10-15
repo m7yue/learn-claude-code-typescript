@@ -124,12 +124,15 @@ function* agentLoop(perform: PerformFn<S10Effect>) {
     │
     AssemblePrompt → 缓存 HIT → 直接返回上次结果
     │
-    节省字符串拼接开销，更重要的是保持 API 缓存稳定性
-    （相同 system prompt = Anthropic 服务端 prompt cache 命中）
+    节省字符串拼接开销；保持 system prompt 稳定本身也有价值——
+    将来接服务端 prompt cache 时，前缀不变才可能命中（本章只做本地缓存）
     │
-轮次 3：context 变化（有了记忆）
+轮次 3：context 若变化（例如填入 memories / activeTask）
     │
-    AssemblePrompt → 缓存 miss → 组装 [identity, tools, workspace, memory]
+    AssemblePrompt → 缓存 miss → 组装 [identity, tools, workspace, memory, task]
+    │
+    （本章演示里 context 始终只有 tools 与 workspace，这一步不会发生；
+      memory / task 片段是备好的能力，见 assemblePrompt 里的条件包含）
 ```
 
 ---

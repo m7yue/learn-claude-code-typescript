@@ -16,6 +16,7 @@ import { ScriptedModel, finalTurn, toolTurn } from "./core/scripted-model.ts";
 import type { Message } from "./core/types.ts";
 import { createTeachingHarness } from "./modules/comprehensive.ts";
 import { buildHarnessTools } from "./modules/harness-tools.ts";
+import { createAuditHooks } from "./modules/hooks.ts";
 
 // 工作区根目录（可用 AGENT_WORKSPACE 覆盖）。
 const cwd = WORKSPACE_ROOT;
@@ -28,6 +29,21 @@ const { definitions: tools, handlers } = buildHarnessTools({
   team: harness.team,
   todos: harness.todos,
 });
+
+// 审计钩子包在工具执行外面：PreToolUse 记录每次调用，PostToolUse 对大结果给出提示。
+// （hooks 模块的接入点就在这里——核心循环不感知钩子，只由入口组合。）
+const audit = createAuditHooks((message) => console.log(`[harness] ${message}`));
+const hookedHandlers = { ...handlers };
+for (const [name, handler] of Object.entries(handlers)) {
+  hookedHandlers[name] = async (args: Record<string, unknown>) => {
+    await audit.run({ event: "PreToolUse", toolName: name, args });
+    const result = await handler(args);
+    for (const outcome of await audit.run({ event: "PostToolUse", toolName: name, result })) {
+      if (outcome.message) console.log(`[harness] ${outcome.message}`);
+    }
+    return result;
+  };
+}
 
 // 权限管线 → ApprovalEffect 的批准函数
 function approve(reason: string, payload: unknown): boolean {
@@ -67,7 +83,7 @@ const messages: Message[] = await runAgent(
     tools,
     requiresApproval: (name, args) => harness.permission.check(name, args).decision !== "allow",
   }),
-  createCoreHandlers({ model, tools: handlers, approve, log: (message) => console.log(`[harness] ${message}`) }),
+  createCoreHandlers({ model, tools: hookedHandlers, approve, log: (message) => console.log(`[harness] ${message}`) }),
 );
 
 const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");

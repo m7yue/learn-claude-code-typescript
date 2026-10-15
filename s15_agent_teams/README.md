@@ -80,7 +80,7 @@ function* teammateLoop(perform, agentId, role) {
     if (inbox.length) messages.push({ role: 'user', content: `<inbox>${JSON.stringify(inbox)}</inbox>` });
     const response = yield* perform({ type: 'Chat', input: { messages, agentId } }); // 模型调用（mock/real）
     if (response.stop_reason !== 'tool_use') break;
-    // 派发工具：bash / read_file / write_file / send_message（真实 Handler）
+    // 派发工具：bash（只回显命令文本的教学实现）/ read_file / write_file / send_message（真实 Handler）
   }
   yield* perform({ type: 'SendMessage', input: { from: agentId, to: 'main', body: summary, kind: 'result' } });
   return summary;

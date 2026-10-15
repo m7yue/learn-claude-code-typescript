@@ -38,6 +38,13 @@ const chapters = [
 
 /** 每个章节 README 声明的、必须真实存在的机制。 */
 const expectations: Record<string, Check[]> = {
+  "s01_agent_loop": [
+    {
+      what: "BashExec 真实执行（不再返回写死的文件列表）",
+      match: /spawnSync\(command[\s\S]{0,200}?shell: true/,
+      absent: /file1\.ts\\nfile2\.ts/,
+    },
+  ],
   "s02_tool_use": [
     { what: "GlobSearch 真正使用 pattern（glob→regex）", match: /globToRegExp/ },
     { what: "演示产物目录锚定章节目录（s02_tool_use/.output，不再写仓库根）", match: /'\.\/s02_tool_use\/\.output'/ },
@@ -54,6 +61,13 @@ const expectations: Record<string, Check[]> = {
     { what: "闸门不再给工具改名（改名会让规则失配）", absent: /\? 'BashExec' : block\.name/ },
     { what: "演示临时文件锚定章节目录（s03_permission/.output，不写进仓库根）", match: /'s03_permission\/\.output'/ },
   ],
+  "s06_subagent": [
+    {
+      what: "主 Agent 的 ReadFile 与子 Agent 同为真读（不再返回占位符）",
+      match: /\[主\] ReadFile[\s\S]{0,500}?fs\.readFileSync/,
+      absent: /\(主 Agent 读取/,
+    },
+  ],
   "s07_skill_loading": [
     { what: "load_skill 先过名字白名单再拼路径", match: /isKnownSkill\(name\)[\s\S]{0,300}?path\.join\(SKILLS_DIR/ },
     { what: "技能名白名单正则", match: /SKILL_NAME_RE/ },
@@ -63,6 +77,11 @@ const expectations: Record<string, Check[]> = {
     { what: "transcript 落盘 .transcripts/", match: /TRANSCRIPTS_DIR/ },
     { what: "工具结果落盘 .task_outputs/tool-results/", match: /TOOL_RESULTS_DIR/ },
     { what: "落盘文件名里的 toolUseId 先净化再拼路径", match: /sanitizeFilePart\(toolUseId\)/ },
+    {
+      what: "大输出来自真实文件，不再是按命令名造的特判",
+      match: /buildDemoLog\(DEMO_BIG_BYTES\)/,
+      absent: /'L'\.repeat\(210_000\)/,
+    },
   ],
   "s09_memory": [
     { what: "select/extract/consolidate 都是真实 LLM 调用", match: /mockSelector/ },
@@ -143,8 +162,34 @@ const expectations: Record<string, Check[]> = {
     { what: "mock 的 edit_file 用 snake_case 键（与工具 schema 一致，否则编辑静默失效）", match: /'edit_file',[^\n]*old_text:/ },
     { what: "落盘文件名先净化（toolUseId / 记忆键名）", match: /sanitizeFilePart\(/ },
     { what: "信箱名先过白名单校验再拼路径", match: /validateAgentId\(agentId\)/ },
+    {
+      what: "task 工具按注册表的键（task）读取，不是 description",
+      match: /block\.input\['task'\]/,
+      absent: /SpawnSubagent[\s\S]{0,100}?block\.input\['description'\]/,
+    },
+    { what: "compact 的 reason 被真正读取", match: /force: true, reason/ },
   ],
 };
+
+/** 工具仍是教学模拟的章节：必须在 system prompt 里说明，真模型才不会空转。 */
+const simulatedChapters = [
+  "s02_tool_use", "s04_hooks", "s05_todo_write", "s07_skill_loading", "s10_system_prompt",
+  "s11_error_recovery", "s13_background_tasks", "s15_agent_teams", "s16_team_protocols",
+  "s17_autonomous_agents", "s19_mcp_plugin",
+];
+
+test("模拟章节的 system prompt 里说明了 bash 是模拟的", async () => {
+  const missing: string[] = [];
+  for (const dir of simulatedChapters) {
+    const source = await readFile(join(root, dir, "agent.ts"), "utf8");
+    if (!source.includes("本教学演示中 bash 是模拟的")) missing.push(dir);
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    `以下章节的 system prompt 没有说明 bash 是模拟的（真模型会拿到假反馈而空转）:\n${missing.join("\n")}`,
+  );
+});
 
 for (const [dir, checks] of Object.entries(expectations)) {
   test(`机制守卫: ${dir}`, async () => {

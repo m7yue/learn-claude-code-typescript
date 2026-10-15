@@ -458,7 +458,8 @@ function mockLLM(messages: Message[]): LLMResponse {
 // real 模式注入的 system prompt；mock 模式不读取，零配置运行行为不变。
 const SYSTEM_PROMPT = buildSystemPrompt(
   '使用工具解决任务。对耗时的 bash 命令（install/build/test/deploy 等）可用 run_in_background 放入后台，' +
-    '主 Agent 继续前台工作；后台任务完成后系统会自动把 <task_notification> 注入对话。',
+    '主 Agent 继续前台工作；后台任务完成后系统会自动把 <task_notification> 注入对话。' +
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行（后台任务同理），请不要依赖它的输出。',
 );
 
 // ============================================================

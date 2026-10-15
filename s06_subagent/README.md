@@ -38,14 +38,13 @@
 
 ## 代数效应视角
 
-引入 `Delegate` Effect（与 boss-agent-v3.ts 完全一致）：
+引入 `Delegate` Effect：
 
 ```typescript
 interface DelegateEffect extends Effect<
   'Delegate',
   {
     task: string;           // 子任务描述
-    tools?: string[];       // 允许使用的工具（可限制）
     maxRounds?: number;     // 最大轮数（防止无限循环）
   },
   string           // 子 Agent 的最终结论
@@ -72,7 +71,7 @@ Delegate: async (effect: DelegateEffect) => {
 | `spawn_subagent(description)` | `yield* perform({ type: 'Delegate', input: { task } })` |
 | `sub_messages = [{"role": "user", "content": description}]` | `subMessages = [{ role: 'user', content: task }]` |
 | `while True:` 嵌套循环 | `runAgent(subFactory, subHandlers)` — 复用同一驱动器 |
-| `最多 30 轮` 硬编码 | `maxRounds` 参数 |
+| `最多 30 轮` 硬编码 | `maxRounds` 参数（默认 10，由主 Agent 传入） |
 | 只返回 `extract_text(response)` | `return result` — 最终文本 |
 
 **隔离的含义**：

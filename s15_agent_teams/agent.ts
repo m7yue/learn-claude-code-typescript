@@ -382,11 +382,12 @@ function startTeammate(agentId: string, role: string): Promise<string> {
 // ============================================================
 
 const LEAD_SYSTEM_PROMPT = buildSystemPrompt(
-  '使用 spawn_teammate / send_message / check_inbox 与队友协作。需要并行工作时，先提出职责清晰的小团队，队友要先完成当前任务再认领下一个。',
+  '使用 spawn_teammate / send_message / check_inbox 与队友协作。需要并行工作时，先提出职责清晰的小团队，队友要先完成当前任务再认领下一个。' +
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。',
 );
 
 function teammateSystemPrompt(agentId: string, role: string): string {
-  return `你是 '${agentId}'，一名${role}。用工具完成任务，并通过 send_message 把结果发给 '${LEAD_ID}'。`;
+  return `你是 '${agentId}'，一名${role}。用工具完成任务，并通过 send_message 把结果发给 '${LEAD_ID}'。本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。`;
 }
 
 // 安全路径校验：把参数解析到工作区内；越界（含同前缀的兄弟目录）即抛错。

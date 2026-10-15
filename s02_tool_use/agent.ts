@@ -160,7 +160,10 @@ function mockLLM(messages: Message[]): LLMResponse {
 
 // real 模式注入的 system prompt，引导模型使用工具完成任务。
 // mock 模式不读取该字段，故零配置运行行为不变。
-const SYSTEM_PROMPT = buildSystemPrompt('使用 bash、read_file、write_file、edit_file、glob 工具解决任务。直接行动，不要多解释。');
+const SYSTEM_PROMPT = buildSystemPrompt(
+  '使用 bash、read_file、write_file、edit_file、glob 工具解决任务。直接行动，不要多解释。' +
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出，文件操作请用文件工具。',
+);
 
 const s02Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {

@@ -137,7 +137,7 @@ Agent Generator
     │   blocked? ├─ Yes → 跳过工具执行，返回拒绝消息
     │            └─ No  ↓
     │
-    ├─ yield BashExec(...)  ← 真正执行
+    ├─ yield BashExec(...)  ← 执行（本章是教学实现：只回显命令文本）
     │
     └─ yield FireHook({ event: 'PostToolUse', ... })
               │
@@ -164,6 +164,8 @@ npm run s04
 [Hook:Log] 即将执行 bash
 [BashExec] → ls -la
 [Hook:PostToolUse] bash 输出 14 字符
+（本章的 BashExec 只回显命令文本，所以「输出」是 `(执行结果: ls -la)` 这 14 个字符；
+  system prompt 里也告诉了模型这一点，避免它依赖这个输出。）
 
 [Chat] → 发送 3 条消息...
 [LLM]  ← stop_reason: tool_use, 工具: bash

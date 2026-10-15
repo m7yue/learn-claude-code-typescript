@@ -191,7 +191,10 @@ function mockLLM(_messages: Message[]): LLMResponse {
 // Part 2c: Handler 实现（所有副作用在此）
 // ============================================================
 
-const SYSTEM_PROMPT = buildSystemPrompt('使用 bash 工具解决任务。遇到限流或过载错误时，按指数退避重试，必要时切换到备用模型；不要因为暂时性错误而放弃任务。');
+const SYSTEM_PROMPT = buildSystemPrompt(
+  '使用 bash 工具解决任务。遇到限流或过载错误时，按指数退避重试，必要时切换到备用模型；不要因为暂时性错误而放弃任务。' +
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。',
+);
 
 const s11Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {

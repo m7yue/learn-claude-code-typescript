@@ -408,10 +408,12 @@ function mockWorker(agentId: string, messages: Message[]): LLMResponse {
 
 // real 模式注入 system prompt；mock 模式不读取，故零配置行为不变。
 const LEAD_SYSTEM_PROMPT = buildSystemPrompt(
-  '你是 lead：用 spawn_teammate 拉起自主工作者，用 check_inbox 收集它的完成报告，用 send_message 下达指令。',
+  '你是 lead：用 spawn_teammate 拉起自主工作者，用 check_inbox 收集它的完成报告，用 send_message 下达指令。' +
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。',
 );
 const WORKER_SYSTEM_PROMPT = buildSystemPrompt(
-  '你是自主工作者：主动用 scan_unclaimed 扫描任务板、用 auto_claim 机会主义认领，用 complete_task 完成自己拥有的任务；没有工作时进入空闲轮询（不要空转）。',
+  '你是自主工作者：主动用 scan_unclaimed 扫描任务板、用 auto_claim 机会主义认领，用 complete_task 完成自己拥有的任务；没有工作时进入空闲轮询（不要空转）。' +
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。',
 );
 
 // ============================================================

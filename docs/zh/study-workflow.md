@@ -111,7 +111,7 @@ npm run harness:real        # 工程层 harness：真实模型 + 真实工具（
 - 默认 `AGENT_MODE=mock`，零配置、不访问网络；只有 `--real` 或 `AGENT_MODE=real` 才会请求模型。
 - 请求 real 但未配置 token 时，会打印警告并回退 mock，不会报错。
 - `.env` 已被 gitignore，切勿把 key 写进代码或提交。
-- 章节 real 模式下 **LLM 是真调用**；工具处理由各章自己的 handler 决定——bash 真执行的是 s03/s09/s12/s18/s20，其余章节为教学模拟。要一套完整真实的工具执行（bash + 读写 + glob），用 `npm run harness:real`。
+- 章节 real 模式下 **LLM 是真调用**；工具处理由各章自己的 handler 决定——bash 真执行的是 s01/s03/s08/s09/s12/s18/s20，其余章节为教学模拟（这些章节会在 system prompt 里告诉模型 bash 是模拟的，免得它空转）。要一套完整真实的工具执行（bash + 读写 + glob），用 `npm run harness:real`。
 
 更多配置见根 `README.md` 的「真实模型（可选）」一节。
 

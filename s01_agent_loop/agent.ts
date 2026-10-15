@@ -14,10 +14,12 @@
 import { runAgent } from '../runtime/core.ts';
 import type { Effect, PerformFn } from '../runtime/core.ts';
 import type { Message, LLMResponse, ToolResultBlock } from '../runtime/types.ts';
-import { extractText, getToolUseBlocks } from '../runtime/response.ts';
+import { extractText, getToolUseBlocks, messageText } from '../runtime/response.ts';
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
+import { WORKSPACE_ROOT } from '../runtime/workspace.ts';
+import { spawnSync } from 'node:child_process';
 
 // ============================================================
 // Part 1: Effect 类型定义
@@ -37,6 +39,9 @@ type S01Effect = ChatEffect | BashExecEffect;
 // mock 模式不读取该字段，故零配置运行行为不变。
 const SYSTEM_PROMPT = buildSystemPrompt('使用 bash 工具解决任务。直接行动，不要多解释。');
 
+// 工作区根目录（可用 AGENT_WORKSPACE 覆盖）。
+const WORKDIR = WORKSPACE_ROOT;
+
 // Mock LLM：用脚本模拟两轮对话
 // 第1轮：调用 bash 工具（等价于 stop_reason == "tool_use"）
 // 第2轮：给出最终答案（等价于 stop_reason == "end_turn"）
@@ -53,17 +58,18 @@ function mockLLM(messages: Message[]): LLMResponse {
           type: 'tool_use',
           id: 'tool_001',
           name: 'bash',
-          input: { command: 'echo "file1.ts\nfile2.ts\nREADME.md"' },
+          input: { command: 'ls -la' },
         },
       ],
     };
   }
 
-  // 第2轮：模型看到工具结果，给出最终回答
+  // 第2轮：模型看到工具结果，给出最终回答（把真实输出原样带回，不编造）
+  const last = messages[messages.length - 1];
   return {
     stop_reason: 'end_turn',
     content: [
-      { type: 'text', text: '当前目录包含：file1.ts, file2.ts, README.md' },
+      { type: 'text', text: `当前目录包含：\n${last ? messageText(last.content) : '(没有拿到工具输出)'}` },
     ],
   };
 }
@@ -81,13 +87,22 @@ const s01Handlers = {
     return response;
   },
 
+  // 真实执行：mock 只替代模型调用，命令本身交给系统 shell
   BashExec: async (effect: BashExecEffect): Promise<string> => {
     const { command } = effect.input;
     console.log(`[BashExec] → ${command}`);
-    // 教学演示：只模拟执行，不真正 fork 进程
-    const output = `file1.ts\nfile2.ts\nREADME.md`;
-    console.log(`[BashExec] ← ${output.slice(0, 60)}`);
-    return output;
+    const r = spawnSync(command, {
+      shell: true,
+      cwd: WORKDIR,
+      encoding: 'utf8',
+      timeout: 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (r.error) return `Error: ${r.error.message}`;
+    const output = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+    // 预览压成一行，避免多行输出把日志撑开
+    console.log(`[BashExec] ← ${output.slice(0, 60).replace(/\n/g, ' ')}`);
+    return output ? output.slice(0, 50_000) : '(no output)';
   },
 };
 

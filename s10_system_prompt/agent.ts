@@ -46,7 +46,7 @@ type S10Effect = ChatEffect | BashExecEffect | AssemblePromptEffect;
 // 提示词片段库：每个片段要么是「静态字符串」，要么是「按上下文生成文本的函数」。
 // 这里用宽松的联合类型存储，assemblePrompt 再按各自的调用形态取值。
 const PROMPT_SECTIONS: Record<string, string | ((...args: string[]) => string)> = {
-  identity: `你是一个编码助手。直接行动，不要过多解释。运行环境：${ENVIRONMENT_PROMPT}。`,
+  identity: `你是一个编码助手。直接行动，不要过多解释。运行环境：${ENVIRONMENT_PROMPT}。本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。`,
   tools: (tools: string[]) => `可用工具：${tools.join('、')}`,
   workspace: (ws: string) => `工作目录：${ws}`,
   memory: (mem: string) => `记忆：\n${mem}`,

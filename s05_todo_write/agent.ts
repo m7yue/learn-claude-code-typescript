@@ -169,7 +169,10 @@ function mockLLM(messages: Message[]): LLMResponse {
 
 // real 模式注入的 system prompt，引导模型使用工具完成任务。
 // mock 模式不读取该字段，故零配置运行行为不变。
-const SYSTEM_PROMPT = buildSystemPrompt('开始任何多步骤任务前，先用 todo_write 规划步骤，并随进度更新状态。');
+const SYSTEM_PROMPT = buildSystemPrompt(
+  '开始任何多步骤任务前，先用 todo_write 规划步骤，并随进度更新状态。' +
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。',
+);
 
 const s05Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {

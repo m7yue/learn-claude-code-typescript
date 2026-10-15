@@ -91,7 +91,7 @@ export const TOOL_SPECS: Record<string, ToolSchema> = {
     ["reason"],
   ),
   // read_memory / write_memory 同时服务 s09 与 s20 两套方言：无公共 key，
-  // 因此取超集且 required 为空——对真实模型是宽松 schema（见设计文档「歧义与处理」）。
+  // 因此取超集且 required 为空——对真实模型是宽松 schema，两套键由各章 dispatch 兼容。
   read_memory: schema(
     "read_memory",
     "读取记忆：按文件名读取（s09）或按查询关键词检索（s20）。",

@@ -55,7 +55,7 @@ const output = yield* perform({
 | 基础循环 | s01 Agent Loop | 模型需要工具结果送回，才能形成完整的行动循环 |
 | 工具能力 | s02 Tool Use | 工具扩展模型可触达的行动空间 |
 | 安全边界 | s03 Permission, s04 Hooks | 真实副作用必须有审批、拦截和审计 |
-| 工作记忆 | s05 TodoWrite | 长任务需要把计划写到外部文件 |
+| 工作记忆 | s05 TodoWrite | 长任务需要把计划写成对话历史之外的结构化状态 |
 | 上下文管理 | s06 Subagent, s08 Compact | 探索过程中的杂乱内容和历史结果不能无限塞进主上下文 |
 | 知识与记忆 | s07 Skill, s09 Memory, s10 Prompt | 知识要按需加载，prompt 要运行时组装 |
 | 韧性 | s11 Recovery | 错误要分类处理，而不是一失败就停止 |

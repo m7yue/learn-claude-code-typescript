@@ -43,7 +43,8 @@ import { extractText, getToolUseBlocks, isToolResultMessage } from '../runtime/r
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
-import { TRANSCRIPTS_DIR, TOOL_RESULTS_DIR } from '../runtime/workspace.ts';
+import { TRANSCRIPTS_DIR, TOOL_RESULTS_DIR, WORKSPACE_ROOT } from '../runtime/workspace.ts';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -79,6 +80,26 @@ const KEEP_RECENT = 3; // 微压缩保留最近 N 个工具结果块
 const PERSIST_THRESHOLD = 30_000; // 单个工具结果超过此字节数才值得写入磁盘
 const MAX_MESSAGES = 50; // 消息数超过此值 → L1 snip
 const MAX_BYTES = 200_000; // 最后一条消息的工具结果总量超过此值 → L3 写入磁盘
+
+// 工作区根目录（可用 AGENT_WORKSPACE 覆盖）。
+const WORKDIR = WORKSPACE_ROOT;
+
+// 演示用的大文件：放在章节目录下的 .output/（已被 gitignore），每次启动重建。
+// 它要真的超过 MAX_BYTES，`cat` 出来的大输出才会触发 L3 落盘——不靠特判造假数据。
+const DEMO_DIR = 's08_context_compact/.output';
+const DEMO_BIG_FILE = `${DEMO_DIR}/large.log`;
+const DEMO_BIG_BYTES = 220_000;
+
+function buildDemoLog(targetBytes: number): string {
+  const parts: string[] = [];
+  let size = 0;
+  for (let i = 0; size < targetBytes; i += 1) {
+    const line = `2026-01-01 00:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')} INFO request #${i} path=/api/v1/items status=200 duration=${(i % 47) + 3}ms\n`;
+    parts.push(line);
+    size += line.length;
+  }
+  return parts.join('');
+}
 
 // 估算上下文大小：用 JSON 序列化后的字符数近似消息占用的体积。
 function estimateSize(messages: Message[]): number {
@@ -283,7 +304,7 @@ function mockLLM(): LLMResponse {
       stop_reason: 'tool_use',
       content: [
         { type: 'text', text: '读取一个大文件。' },
-        { type: 'tool_use', id: 'tool_big', name: 'bash', input: { command: 'cat large.log' } },
+        { type: 'tool_use', id: 'tool_big', name: 'bash', input: { command: `cat ${DEMO_BIG_FILE}` } },
       ],
     };
   }
@@ -320,12 +341,21 @@ const s08Handlers = {
     });
   },
 
+  // 真实执行。本章专门演示大输出，因此不按其余章节截到 5 万字符，
+  // 放宽到 1MB——`.output/large.log` 的真实 `cat` 输出才会超过 MAX_BYTES 触发 L3。
   BashExec: async (effect: BashExecEffect): Promise<string> => {
     const { command } = effect.input;
     console.log(`[BashExec] → ${command}`);
-    // 模拟超大工具输出：> MAX_BYTES，下一轮 L3 会把它写入磁盘并只留路径引用。
-    if (command.includes('large.log')) return 'L'.repeat(210_000);
-    return `result: ${command}\n${'x'.repeat(150)}`;
+    const r = spawnSync(command, {
+      shell: true,
+      cwd: WORKDIR,
+      encoding: 'utf8',
+      timeout: 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (r.error) return `Error: ${r.error.message}`;
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+    return out ? out.slice(0, 1_000_000) : '(no output)';
   },
 
   // L4 / 应急：真实 LLM 摘要（mock 仅替换模型），transcript 落 .transcripts/
@@ -457,6 +487,12 @@ function* agentLoop(perform: PerformFn<S08Effect>) {
 // ============================================================
 
 console.log('[S08] Context Compact 启动\n');
+
+// 先建好演示用的大文件（约 220KB），让第 5 轮的 `cat` 拿到真实的大输出。
+const demoBigPath = path.resolve(WORKDIR, DEMO_BIG_FILE);
+fs.mkdirSync(path.dirname(demoBigPath), { recursive: true });
+fs.writeFileSync(demoBigPath, buildDemoLog(DEMO_BIG_BYTES), 'utf8');
+console.log(`[准备] 已建好演示大文件: ${DEMO_BIG_FILE} (${fs.statSync(demoBigPath).size} 字节)\n`);
 
 const result = await runAgent<S08Effect, string>(agentLoop, s08Handlers);
 

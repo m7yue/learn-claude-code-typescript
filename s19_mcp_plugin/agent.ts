@@ -205,7 +205,8 @@ const s19Handlers = {
     // real 模式注入的 system prompt，引导模型使用工具完成任务。
     // mock 模式不读取该字段，故零配置运行行为不变。
     const systemPrompt = buildSystemPrompt(
-      '使用内置工具和已连接的 MCP 工具解决任务。',
+      '使用内置工具和已连接的 MCP 工具解决任务。' +
+        '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行；MCP 工具返回的同样是预设结果，请不要把它们当成真实数据。',
       mcpNames.length ? `已连接的 MCP 服务器：${mcpNames.join('、')}` : '',
     );
     await new Promise(r => setTimeout(r, 30));

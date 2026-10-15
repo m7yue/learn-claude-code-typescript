@@ -134,14 +134,14 @@ function* agentLoop(perform: PerformFn<S01Effect>) {
 ### Handler 实现
 
 ```typescript
-const handlers = {
-  // Mock：模拟 LLM 的响应脚本
-  Chat: async (effect) => mockLLMScript(effect.input.messages),
+const s01Handlers = {
+  // Mock：模拟 LLM 的响应脚本（real 模式改调真实模型，见 runtime/model.ts 的 callChat）
+  Chat: async (effect) => callChat(mockLLM, effect.input.messages, { tools: schemasFor('bash'), system: SYSTEM_PROMPT }),
 
-  // 真实：执行 bash 命令
+  // 真实：执行 bash 命令（mock 只替代模型调用，命令本身交给系统 shell）
   BashExec: async (effect) => {
-    const { command } = effect.input;
-    return execSync(command, { encoding: 'utf8' });
+    const r = spawnSync(effect.input.command, { shell: true, cwd: WORKDIR, encoding: 'utf8' });
+    return r.stdout ?? '';
   },
 };
 ```
@@ -196,16 +196,20 @@ npm run s01
 
 [Chat] → 发送 1 条消息...
 [LLM]  ← stop_reason: tool_use
-[BashExec] → echo "file1.ts\nfile2.ts\nREADME.md"
-[BashExec] ← file1.ts\nfile2.ts\nREADME.md
+[BashExec] → ls -la
+[BashExec] ← total 296 drwxr-xr-x@ 47 7yue  staff   1504 Oct 15 23:41 . d
 [Chat] → 发送 3 条消息...
 [LLM]  ← stop_reason: end_turn
 
-[S01] 完成: 当前目录包含：file1.ts, file2.ts, README.md
+[S01] 完成: 当前目录包含：
+total 296
+drwxr-xr-x@ 47 7yue  staff   1504 Oct 15 23:41 .
+drwxr-xr-x@  5 7yue  staff    160 May 31 00:54 ..
+...（后面是工作目录的真实内容）
 ```
 
-> 说明：本章的 `BashExec` handler 只做模拟，不真正启动新进程，因此返回的是提前写好的文件列表。
-> 截图中 `\n` 在实际终端里会逐行换行显示。若要执行真实命令，见根 README 的 real 模式。
+> 说明：`BashExec` 真的执行 `ls -la`（工作目录可用 `AGENT_WORKSPACE` 覆盖），所以输出随你的目录而变，上面只是一次示例。
+> `←` 那一行是命令输出的前 60 个字符。
 
 ---
 

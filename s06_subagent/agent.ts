@@ -208,9 +208,19 @@ const s06Handlers = {
     return `(主 Agent 执行: ${effect.input.command})`;
   },
 
+  // 与子 Agent 的 ReadFile 同一套实现：主 Agent 也真读磁盘
   ReadFile: async (effect: ReadFileEffect): Promise<string> => {
     console.log(`[主] ReadFile → ${effect.input.path}`);
-    return `(主 Agent 读取: ${effect.input.path})`;
+    try {
+      const resolved = path.resolve(WORKDIR, effect.input.path);
+      const rel = path.relative(WORKDIR, resolved);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) return '[错误] 路径越界';
+      const content = fs.readFileSync(resolved, 'utf8');
+      const lines = content.split('\n');
+      return effect.input.limit ? lines.slice(0, effect.input.limit).join('\n') : content;
+    } catch {
+      return `[错误] 无法读取: ${effect.input.path}`;
+    }
   },
 
   // Delegate Handler：在隔离的效应域里运行子 Agent

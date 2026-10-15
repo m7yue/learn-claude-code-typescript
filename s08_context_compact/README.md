@@ -161,6 +161,9 @@ AGENT_MODE=real npm run s08
 AGENT_WORKSPACE=/tmp/s08ws npm run s08
 ```
 
+演示启动时会先在 `s08_context_compact/.output/` 下建一个约 220KB 的 `large.log`（已被 gitignore）。
+第 5 轮的 `cat` 读的就是它——大输出是真的大输出，L3 落盘也是真的。
+
 ---
 
 ## 本章小结
