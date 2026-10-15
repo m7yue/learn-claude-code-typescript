@@ -43,6 +43,17 @@ const expectations: Record<string, Check[]> = {
     { what: "演示产物目录锚定章节目录（s02_tool_use/.output，不再写仓库根）", match: /'\.\/s02_tool_use\/\.output'/ },
     { what: "写出的仍是 s02_output.txt", match: /s02_output\.txt/ },
   ],
+  "s03_permission": [
+    {
+      what: "BashExec 真实执行（不再是回显字符串）",
+      match: /spawnSync\(command[\s\S]{0,200}?shell: true/,
+      absent: /\(执行结果: \$\{command\}\)/,
+    },
+    { what: "Gate 3 在终端真问用户，非交互环境自动同意", match: /isTTY/ },
+    { what: "闸门用模型工具名，write_file 规则能匹配上", match: /tool !== 'write_file'/ },
+    { what: "闸门不再给工具改名（改名会让规则失配）", absent: /\? 'BashExec' : block\.name/ },
+    { what: "演示临时文件锚定章节目录（s03_permission/.output，不写进仓库根）", match: /'s03_permission\/\.output'/ },
+  ],
   "s07_skill_loading": [
     { what: "load_skill 先过名字白名单再拼路径", match: /isKnownSkill\(name\)[\s\S]{0,300}?path\.join\(SKILLS_DIR/ },
     { what: "技能名白名单正则", match: /SKILL_NAME_RE/ },

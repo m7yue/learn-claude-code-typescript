@@ -16,11 +16,12 @@ Agent 通过 Effect 声明"我要做 X"。但并非所有 X 都应该被允许�
 
 ## 问题
 
-s02 的 `BashExec` Handler 直接执行命令，没有任何拦截：
+s02 没有权限层：Handler 拿到命令就直接执行，没有任何拦截。本章的命令是真执行的，模型生成什么就跑什么：
 
 ```typescript
 BashExec: async (effect) => {
-  return execSync(effect.input.command).toString(); // 完全信任！
+  const r = spawnSync(effect.input.command, { shell: true, cwd: WORKDIR }); // 完全信任！
+  return `${r.stdout ?? ''}${r.stderr ?? ''}`;
 },
 ```
 
@@ -44,10 +45,10 @@ interface RequestPermissionEffect extends Effect<
 > {}
 ```
 
-**三道检查关口**，在 Handler 内部串联：
+**三道检查关口**，在工具执行前串联；其中「问用户」这一步本身就是副作用，走 `RequestPermission` Effect 交给 Handler：
 
 ```
-BashExec Handler 被调用
+执行工具之前（Generator 里串起前两关）
       │
       ▼
 Gate 1: DenyList 检查（命中禁止清单就拒绝，没有商量余地）
@@ -90,13 +91,13 @@ const DENY_LIST = ['rm -rf /', 'sudo', 'shutdown', 'reboot', ':(){ :|:& };:'];
 const PERMISSION_RULES = [
   {
     match: (tool: string, args: Record<string, unknown>) =>
-      tool === 'BashExec' && DENY_LIST.some(d => String(args.command).includes(d)),
+      tool === 'bash' && DENY_LIST.some(d => String(args.command).includes(d)),
     reason: '命令在禁止清单中',
     autoReject: true,
   },
   {
     match: (tool: string, args: Record<string, unknown>) => {
-      if (tool !== 'WriteFile') return false;
+      if (tool !== 'write_file') return false;
       const rel = path.relative(WORKDIR, path.resolve(WORKDIR, String(args.path ?? '')));
       return rel.startsWith('..') || path.isAbsolute(rel);
     },
@@ -108,16 +109,21 @@ const PERMISSION_RULES = [
 
 ### 业务逻辑不变
 
-Agent Generator 与 s02 完全相同。权限逻辑完全封装在 Handler 内部：
+Agent Generator 的循环结构与 s02 相同，只是在执行工具前多走了一步检查。
+
+闸门收的是**模型给的**工具名（`bash` / `write_file`），和规则表里写的是同一套名字，中间不做任何改名。
+
+批准本身是副作用（要问用户），所以它是一条 Effect：Generator 里串起三关，第 3 关命中规则时才 `yield` 一个 `RequestPermission` 交给 Handler 处理。
 
 ```typescript
-BashExec: async (effect) => {
-  // 先检查权限（通过 RequestPermission Effect）
-  const perm = await checkPermissionPipeline('BashExec', effect.input);
-  if (!perm.allowed) return `[拒绝] ${perm.reason}`;
+// Generator：执行工具之前
+const perm = yield* checkPermissionPipeline(block.name, block.input, perform);
+if (!perm.allowed) { /* 把拒绝原因作为工具结果喂回模型 */ }
 
-  // 权限通过后才执行
-  return execSync(effect.input.command).toString();
+// Handler：批准之后才真正执行
+BashExec: async (effect) => {
+  const r = spawnSync(effect.input.command, { shell: true, cwd: WORKDIR });
+  return `${r.stdout ?? ''}${r.stderr ?? ''}`;
 },
 ```
 
@@ -126,10 +132,10 @@ BashExec: async (effect) => {
 ## 工作原理
 
 ```
-Agent: yield* perform({ type: 'BashExec', input: { command: 'rm -rf /' } })
+模型返回 tool_use: bash，参数 { command: 'rm -rf /' }
                      │
                      ▼
-          runAgent → BashExec Handler
+          checkPermissionPipeline（Generator 里串起三关）
                      │
                      ▼
               Gate 1: DenyList
@@ -149,7 +155,7 @@ Agent: yield* perform({ type: 'BashExec', input: { command: 'rm -rf /' } })
                     └─ 同意 → return { allowed: true }
                                │
                                ▼（若 allowed）
-              execSync(command) → 返回结果
+              perform({ type: 'BashExec' }) → spawnSync(command) → 返回结果
 ```
 
 ---
@@ -160,17 +166,24 @@ Agent: yield* perform({ type: 'BashExec', input: { command: 'rm -rf /' } })
 npm run s03
 ```
 
-输出示例：
+章节启动时先建好演示用的临时文件（`s03_permission/.output/tmp.txt`，落在章节目录的 `.output/` 里，已被 gitignore），每次运行都重建，所以「清理」这一步有真实目标。
+
+命令是真执行的，工作目录就是工作区根目录（`AGENT_WORKSPACE` 可覆盖），所以第 3 关会在终端里停下来等你输入 y/N，空回车按拒绝。管道、CI、e2e 测试这类非交互环境读不到输入，自动同意。
+
+输出示例（按 y 的那次）：
 ```
 [S03] Permission 启动
+
+[准备] 已建好演示临时文件: s03_permission/.output/tmp.txt
 
 [Chat] → 发送 1 条消息...
 [LLM]  ← stop_reason: tool_use, 工具: bash
 [Gate1] ✓ 未命中禁止清单
 [Gate2] ⚠ 命中规则: 可能的破坏性命令
-[Permission] → 询问用户: 是否允许执行 BashExec? (原因: 可能的破坏性命令)
-[Permission] ← 用户: 同意（mock）
-[BashExec] → rm temp.txt
+[Permission] → 询问用户: 是否允许执行 bash? (原因: 可能的破坏性命令)
+  允许执行 `rm s03_permission/.output/tmp.txt` 吗？[y/N] y
+[Permission] ← 用户: 同意
+[BashExec] → rm s03_permission/.output/tmp.txt
 
 [Chat] → 发送 3 条消息...
 [LLM]  ← stop_reason: tool_use, 工具: bash
@@ -182,6 +195,8 @@ npm run s03
 
 [S03] 完成: 操作已完成（部分被拒绝）。
 ```
+
+`rm s03_permission/.output/tmp.txt` 真的执行了，那个临时文件被删掉；命中禁止清单的那条根本没进入执行。
 
 ---
 

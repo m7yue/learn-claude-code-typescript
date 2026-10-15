@@ -18,6 +18,8 @@ import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import { WORKSPACE_ROOT } from '../runtime/workspace.ts';
+import { spawnSync } from 'node:child_process';
+import * as readline from 'node:readline/promises';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 
@@ -51,6 +53,11 @@ type S03Effect =
 // 工作区根目录（可用 AGENT_WORKSPACE 覆盖）。
 const WORKDIR = WORKSPACE_ROOT;
 
+// 演示用的临时文件：放在章节目录下的 .output/（与 s02/s20 的演示产物同规矩，已被 gitignore）。
+// 每次启动时重建，让「清理临时文件」有真实目标，也把模型的操作范围钉在这一次演示里。
+const DEMO_DIR = 's03_permission/.output';
+const DEMO_TMP_FILE = `${DEMO_DIR}/tmp.txt`;
+
 // Gate 1：禁止清单，命令里只要包含其中一项就直接拒绝
 const DENY_LIST = [
   'rm -rf /',
@@ -62,7 +69,8 @@ const DENY_LIST = [
   ':(){ :|:& };:',
 ];
 
-// Gate 2：规则列表
+// Gate 2：规则列表。match 收到的是模型给的工具名（bash / read_file / write_file），
+// 与规则表里写的名字必须一致，中间不做任何改名。
 interface PermissionRule {
   match: (toolName: string, args: Record<string, unknown>) => boolean;
   reason: string;
@@ -72,7 +80,7 @@ interface PermissionRule {
 const PERMISSION_RULES: PermissionRule[] = [
   {
     match: (tool, args) =>
-      tool === 'BashExec' && ['rm ', 'mv ', 'chmod ', 'chown '].some(
+      tool === 'bash' && ['rm ', 'mv ', 'chmod ', 'chown '].some(
         d => String(args['command'] ?? '').includes(d)
       ),
     reason: '可能的破坏性命令',
@@ -81,7 +89,7 @@ const PERMISSION_RULES: PermissionRule[] = [
   {
     // 用相对路径判断是否越界：`/工作区-xxx` 这类同前缀兄弟目录也会被判为「工作区外」。
     match: (tool, args) => {
-      if (tool !== 'WriteFile') return false;
+      if (tool !== 'write_file') return false;
       const resolved = path.resolve(WORKDIR, String(args['path'] ?? ''));
       const rel = path.relative(WORKDIR, resolved);
       return rel.startsWith('..') || path.isAbsolute(rel);
@@ -99,15 +107,15 @@ function safePath(p: string): string {
   return resolved;
 }
 
-// Mock LLM：先发危险命令，再发安全命令
+// Mock LLM：先发会被规则拦下、交给用户审批的命令，再发命中禁止清单的命令
 function mockLLM(messages: Message[]): LLMResponse {
   const round = messages.filter(m => m.role === 'assistant').length;
   if (round === 0) {
     return {
       stop_reason: 'tool_use',
       content: [
-        { type: 'text', text: '我先做一些文件操作。' },
-        { type: 'tool_use', id: 'tool_001', name: 'bash', input: { command: 'rm temp.txt' } },
+        { type: 'text', text: '我先清理这个临时文件。' },
+        { type: 'tool_use', id: 'tool_001', name: 'bash', input: { command: `rm ${DEMO_TMP_FILE}` } },
       ],
     };
   }
@@ -128,13 +136,14 @@ function mockLLM(messages: Message[]): LLMResponse {
 
 // 权限检查流程（依次过三道检查关）
 // 注意：这个函数需要 perform 才能发起 RequestPermission Effect，所以它是一个 Generator 函数
+// toolName 用的是模型给的工具名（bash / write_file）
 function* checkPermissionPipeline(
   toolName: string,
   args: Record<string, unknown>,
   perform: PerformFn<S03Effect>
 ): Generator<S03Effect, { allowed: boolean; reason?: string }, any> {
-  // Gate 1: DenyList
-  if (toolName === 'BashExec') {
+  // Gate 1: DenyList（只针对 bash）
+  if (toolName === 'bash') {
     const command = String(args['command'] ?? '');
     const denied = DENY_LIST.find(d => command.includes(d));
     if (denied) {
@@ -164,7 +173,9 @@ function* checkPermissionPipeline(
 
 // real 模式注入的 system prompt，引导模型使用工具完成任务。
 // mock 模式不读取该字段，故零配置运行行为不变。
-const SYSTEM_PROMPT = buildSystemPrompt('使用 bash、read_file、write_file 工具解决任务。所有破坏性操作都需要用户批准。');
+const SYSTEM_PROMPT = buildSystemPrompt(
+  '使用 bash、read_file、write_file 工具解决任务。所有破坏性操作都需要用户批准。只处理任务指定的文件与目录，不要扫描或清理其他位置。'
+);
 
 const s03Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
@@ -180,11 +191,20 @@ const s03Handlers = {
     return response;
   },
 
+  // 真实执行：mock 只替代模型调用，命令本身交给系统 shell
   BashExec: async (effect: BashExecEffect): Promise<string> => {
     const { command } = effect.input;
     console.log(`[BashExec] → ${command}`);
-    // 教学演示：模拟执行
-    return `(执行结果: ${command})`;
+    const r = spawnSync(command, {
+      shell: true,
+      cwd: WORKDIR,
+      encoding: 'utf8',
+      timeout: 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (r.error) return `Error: ${r.error.message}`;
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+    return out ? out.slice(0, 50_000) : '(no output)';
   },
 
   ReadFile: async (effect: ReadFileEffect): Promise<string> => {
@@ -208,24 +228,41 @@ const s03Handlers = {
     }
   },
 
-  // Gate 3 实现：在生产环境询问用户，在测试环境自动同意
+  // Gate 3 实现：终端里问用户；非交互环境（e2e 子进程、管道）不阻塞，自动同意
   RequestPermission: async (effect: RequestPermissionEffect): Promise<{ allowed: boolean; reason?: string }> => {
-    const { toolName, reason } = effect.input;
+    const { toolName, args, reason } = effect.input;
+    const detail = String(args['command'] ?? args['path'] ?? toolName);
     console.log(`[Permission] → 询问用户: 是否允许执行 ${toolName}? (原因: ${reason})`);
-    // 教学演示：自动同意（真实实现可用 readline 等待用户输入）
-    const allowed = true;
-    console.log(`[Permission] ← 用户: ${allowed ? '同意（mock）' : '拒绝（mock）'}`);
-    return { allowed, reason: allowed ? undefined : '用户拒绝' };
+
+    if (!process.stdin.isTTY) {
+      console.log('[Permission] ← 非交互环境，自动同意');
+      return { allowed: true };
+    }
+
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      // 空回车按拒绝：本章的失败默认拒绝
+      const answer = (await rl.question(`  允许执行 \`${detail}\` 吗？[y/N] `)).trim().toLowerCase();
+      const allowed = answer === 'y' || answer === 'yes';
+      console.log(`[Permission] ← 用户: ${allowed ? '同意' : '拒绝'}`);
+      return allowed ? { allowed: true } : { allowed: false, reason: '用户拒绝' };
+    } catch {
+      // 输入被中断等情况同样按失败默认拒绝处理
+      console.log('[Permission] ← 未取得批准');
+      return { allowed: false, reason: '未获得用户批准' };
+    } finally {
+      rl.close();
+    }
   },
 };
 
 // ============================================================
-// Part 3: Agent Generator（业务逻辑 — 与 s02 完全一致）
+// Part 3: Agent Generator（业务逻辑 — 与 s02 相同，只在执行工具前多走一道权限检查）
 // ============================================================
 
 function* agentLoop(perform: PerformFn<S03Effect>) {
   const messages: Message[] = [
-    { role: 'user', content: '清理临时文件，然后列出目录结构。' },
+    { role: 'user', content: `清理临时文件 ${DEMO_TMP_FILE}，然后列出 ${DEMO_DIR} 目录。` },
   ];
 
   while (true) {
@@ -243,7 +280,7 @@ function* agentLoop(perform: PerformFn<S03Effect>) {
         // 权限检查：在 yield Effect 之前，先走三道闸门
         // 注意：checkPermissionPipeline 本身是 Generator，可以在内部 yield RequestPermission
         const perm = yield* checkPermissionPipeline(
-          block.name === 'bash' ? 'BashExec' : block.name,
+          block.name,
           block.input as Record<string, unknown>,
           perform
         );
@@ -294,6 +331,12 @@ function* agentLoop(perform: PerformFn<S03Effect>) {
 // ============================================================
 
 console.log('[S03] Permission 启动\n');
+
+// 先建好演示用的临时文件，让「清理」这一步真的有事可做（每次运行都重建）。
+const demoTmpPath = safePath(DEMO_TMP_FILE);
+fs.mkdirSync(path.dirname(demoTmpPath), { recursive: true });
+fs.writeFileSync(demoTmpPath, '演示用的临时文件，可以删。\n', 'utf8');
+console.log(`[准备] 已建好演示临时文件: ${DEMO_TMP_FILE}\n`);
 
 const result = await runAgent<S03Effect, string>(agentLoop, s03Handlers);
 

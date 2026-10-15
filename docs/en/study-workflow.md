@@ -111,7 +111,7 @@ Key points:
 - The default is `AGENT_MODE=mock`: zero config, no network. Only `--real` or `AGENT_MODE=real` triggers a model request.
 - If real is requested but no token is configured, it warns and falls back to mock instead of failing.
 - `.env` is git-ignored — never commit keys.
-- In a chapter's real mode the **LLM call is real, but tool handling stays with the chapter's teaching handler**; for fully real tool execution use `npm run harness:real`.
+- In a chapter's real mode the **LLM call is real**; whether a tool actually runs depends on that chapter's handler — bash is really executed in s03/s09/s12/s18/s20 and simulated in the rest. For a fully real tool set (bash + read/write + glob) use `npm run harness:real`.
 
 See the "Real model (optional)" section in the root `README.en.md` for details.
 
