@@ -20,7 +20,6 @@
 - [确定性 mock 驱动的流程](#确定性-mock-驱动的流程)
 - [代数效应视角](#代数效应视角)
 - [运行](#运行)
-- [已知的共享 schema 缺口](#已知的共享-schema-缺口)
 - [项目小结](#项目小结)
 
 ---
@@ -141,17 +140,6 @@ npm run s20
   .task_outputs/tool-results/  # 超大工具输出写入磁盘（PersistOutput）
   .scheduled_tasks.json        # durable cron 任务
 ```
-
----
-
-## 已知的共享 schema 缺口
-
-为保证 `tests/chapter-specs.test.ts`（扫描 `schemasFor(...)` 字面量并要求命中 `TOOL_SPECS`）通过，本章把两个**共享层缺失**的工具 schema 以本地 `ToolSchema` 内联定义（不经 `schemasFor`）：
-
-- `keep_worktree`（s18 的“保留 worktree”动作）
-- `submit_plan`（s16 的“提交计划并关闭关口”动作）
-
-建议后续在 `runtime/tool-schemas.ts` 中补齐这两个工具定义，本章即可改用 `schemasFor`。**共享文件未做改动**（按要求只报不改）。
 
 ---
 

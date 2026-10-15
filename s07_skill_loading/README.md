@@ -146,8 +146,7 @@ npm run s07
 
 [Chat] → 轮次 1
 [System] 包含技能目录 (642 字符)
-[LLM]  ← tool_use, 工具: list_skills
-...
+[LLM]  ← tool_use, 工具: load_skill
 [LoadSkill] 加载技能: code-review (568 字符，来自文件)
 ...
 ```

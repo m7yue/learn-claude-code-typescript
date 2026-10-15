@@ -345,7 +345,7 @@ function mockLead(): LLMResponse {
         stop_reason: 'tool_use',
         content: [
           text('等待并收取自主工作者的完成报告。'),
-          tool('l2', 'check_inbox', { agentId: LEAD_ID }),
+          tool('l2', 'check_inbox', {}),
         ],
       };
     default:
@@ -445,7 +445,7 @@ function* autonomousWorkerLoop(perform: PerformFn<S17Effect>, agentId: string, r
   const messages: Message[] = [
     {
       role: 'user',
-      content: `你是自主工作者 '${agentId}'（${role}）。主动扫描任务板、认领并完成可用任务；没有工作时进入空闲轮询，超时或收到 shutdown 请求则退出。`,
+      content: `你是自主工作者 '${agentId}'（${role}）。主动扫描任务板、认领并完成可用任务；没有工作时进入空闲轮询，超时或收到 shutdown 请求则退出。需要主动汇报时用 send_message 发给 lead（它的信箱是 '${LEAD_ID}'）。`,
     },
   ];
 

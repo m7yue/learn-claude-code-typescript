@@ -30,6 +30,6 @@ export class McpToolPool {
 }
 
 export function normalizeMcpName(server: string, tool: string): string {
-  const clean = (value: string) => value.replace(/[^a-zA-Z0-9_]+/g, "_");
+  const clean = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_");
   return `mcp__${clean(server)}__${clean(tool)}`;
 }

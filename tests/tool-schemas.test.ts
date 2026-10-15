@@ -39,7 +39,6 @@ test("注册表名称快照（防止无意增删/改名）", () => {
     "cancel_cron",
     "check_inbox",
     "claim_task",
-    "collect_notifications",
     "compact",
     "complete_task",
     "create_task",
@@ -50,7 +49,6 @@ test("注册表名称快照（防止无意增删/改名）", () => {
     "idle_poll",
     "keep_worktree",
     "list_crons",
-    "list_skills",
     "list_tasks",
     "list_team",
     "load_skill",
@@ -64,14 +62,12 @@ test("注册表名称快照（防止无意增删/改名）", () => {
     "schedule_cron",
     "select_memory",
     "send_message",
-    "spawn_background",
     "spawn_teammate",
     "submit_plan",
     "task",
     "todo_read",
     "todo_write",
     "update_task",
-    "wait_background",
     "write_file",
     "write_memory",
   ]);
@@ -83,7 +79,6 @@ test("关键工具的 required 与章节实际入参对齐", () => {
 
   assert.deepEqual(required("bash"), ["command"]);
   assert.deepEqual(required("claim_task"), ["taskId"]);
-  assert.deepEqual(required("spawn_background"), ["taskId", "description"]);
   assert.deepEqual(required("send_message"), ["to", "body"]);
   assert.deepEqual(required("compact"), ["reason"]);
   assert.deepEqual(required("create_task"), ["subject"]);

@@ -537,8 +537,8 @@ function mockLLM(messages: Message[]): LLMResponse {
         stop_reason: 'tool_use',
         content: [
           text('为两个任务分别创建隔离的 git worktree。'),
-          tool('m3', 'create_worktree', { worktreeId: 'auth', branch: 'feature/auth' }),
-          tool('m4', 'create_worktree', { worktreeId: 'ui', branch: 'feature/ui' }),
+          tool('m3', 'create_worktree', { worktreeId: 'auth' }),
+          tool('m4', 'create_worktree', { worktreeId: 'ui' }),
         ],
       };
     case 2:

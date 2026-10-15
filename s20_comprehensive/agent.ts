@@ -246,7 +246,7 @@ interface RequestShutdownEffect
   extends Effect<'RequestShutdown', { agentId: string; reason?: string }, { acknowledged: boolean; requestId: string; responder: string }> {}
 
 interface CreateWorktreeEffect
-  extends Effect<'CreateWorktree', { worktreeId: string; branch?: string }, { ok: boolean; worktreeId: string; path?: string; reason?: string }> {}
+  extends Effect<'CreateWorktree', { worktreeId: string; taskId?: string }, { ok: boolean; worktreeId: string; path?: string; reason?: string }> {}
 interface RemoveWorktreeEffect
   extends Effect<'RemoveWorktree', { worktreeId: string; discardChanges?: boolean }, { removed: boolean; reason?: string }> {}
 interface KeepWorktreeEffect
@@ -1095,7 +1095,7 @@ function mockLead(messages: Message[]): LLMResponse {
         content: [
           textBlock('创建依赖 A、B 的集成测试任务，并等待队友的计划审批请求。'),
           toolUse('L3a', 'create_task', { subject: '集成测试', description: '端到端验证', blockedBy: [a, b] }),
-          toolUse('L3b', 'check_inbox', { agentId: LEAD_ID, expectType: 'plan_approval_request' }),
+          toolUse('L3b', 'check_inbox', { expectType: 'plan_approval_request' }),
         ],
       });
     case 4:
@@ -1153,7 +1153,7 @@ function mockLead(messages: Message[]): LLMResponse {
         stop_reason: 'tool_use',
         content: [
           textBlock('创建隔离 worktree（本轮连续 529，由模型切换恢复）。'),
-          toolUse('L9a', 'create_worktree', { worktreeId: WORKTREE_NAME, branch: `wt/${WORKTREE_NAME}` }),
+          toolUse('L9a', 'create_worktree', { worktreeId: WORKTREE_NAME }),
         ],
       });
     case 10:
@@ -1215,7 +1215,7 @@ function mockLead(messages: Message[]): LLMResponse {
     case 17:
       return respond({
         stop_reason: 'tool_use',
-        content: [textBlock('检查信箱收尾。'), toolUse('L17a', 'check_inbox', { agentId: LEAD_ID })],
+        content: [textBlock('检查信箱收尾。'), toolUse('L17a', 'check_inbox', {})],
       });
     default:
       return respond({
@@ -1296,14 +1296,14 @@ async function settleTeammatesWithin(ms: number): Promise<void> {
 }
 
 function teammateSystemPrompt(agentId: string, role: string): string {
-  return `你是 '${agentId}'，一名${role}。收到 lead 的计划请求后用 submit_plan 提交计划（这会关闭审批闸门，直到 lead 返回 plan_approval_response）；收到 shutdown_request 时优雅退出。`;
+  return `你是 '${agentId}'，一名${role}。收到 lead（信箱 '${LEAD_ID}'）的计划请求后用 submit_plan 提交计划（这会关闭审批闸门，直到 lead 返回 plan_approval_response）；收到 shutdown_request 时优雅退出。`;
 }
 
 function* teammateLoop(perform: PerformFn<S20Effect>, agentId: string, role: string) {
   const messages: Message[] = [
     {
       role: 'user',
-      content: `你是团队成员 '${agentId}'（${role}）。等待 lead 通过信箱派发任务：先提交计划等待审批，批准后执行任务，最后等待关闭。`,
+      content: `你是团队成员 '${agentId}'（${role}）。等待 lead（信箱 '${LEAD_ID}'）通过信箱派发任务：先提交计划等待审批，批准后执行任务，最后等待关闭。`,
     },
   ];
   let phase: 'await' | 'work' | 'done' = 'await';
@@ -1917,7 +1917,7 @@ const s20Handlers: EffectHandlers<S20Effect> = {
   CreateWorktree: async (
     effect: CreateWorktreeEffect,
   ): Promise<{ ok: boolean; worktreeId: string; path?: string; reason?: string }> => {
-    const res = createWorktree(effect.input.worktreeId, effect.input.branch ?? '');
+    const res = createWorktree(effect.input.worktreeId, effect.input.taskId ?? '');
     console.log(`[CreateWorktree] ${effect.input.worktreeId}: ${res.ok ? res.path : res.reason}`);
     return res;
   },
@@ -2218,10 +2218,9 @@ function* leadLoop(perform: PerformFn<S20Effect>) {
             break;
           }
           case 'check_inbox': {
-            const input: { agentId: string; expectType?: string; waitMs?: number } = {
-              agentId: String(block.input['agentId'] ?? LEAD_ID),
-            };
+            const input: { agentId: string; expectType?: string; waitMs?: number } = { agentId: LEAD_ID };
             if (block.input['expectType'] !== undefined) input.expectType = String(block.input['expectType']);
+            if (block.input['waitMs'] !== undefined) input.waitMs = Number(block.input['waitMs']);
             const msgs = yield* perform({ type: 'CheckInbox', input });
             output = msgs.length ? msgs.map((m) => `[${m.type}] ${m.from}: ${m.body}`).join('\n') : '信箱为空';
             break;
@@ -2252,7 +2251,10 @@ function* leadLoop(perform: PerformFn<S20Effect>) {
           case 'create_worktree': {
             const res = yield* perform({
               type: 'CreateWorktree',
-              input: { worktreeId: String(block.input['worktreeId'] ?? ''), branch: String(block.input['branch'] ?? '') },
+              input: {
+                worktreeId: String(block.input['worktreeId'] ?? ''),
+                taskId: block.input['taskId'] !== undefined ? String(block.input['taskId']) : undefined,
+              },
             });
             output = res.ok ? `worktree ${res.worktreeId} created at ${res.path}` : `[错误] ${res.reason}`;
             break;

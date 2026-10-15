@@ -399,7 +399,7 @@ function mockLead(messages: Message[]): LLMResponse {
       stop_reason: 'tool_use',
       content: [
         { type: 'text', text: '检查收件箱，收尾。' },
-        { type: 'tool_use', id: 'm5', name: 'check_inbox', input: { agentId: LEAD_ID } },
+        { type: 'tool_use', id: 'm5', name: 'check_inbox', input: {} },
       ],
     };
   }
@@ -444,7 +444,7 @@ const LEAD_SYSTEM_PROMPT = buildSystemPrompt(
 );
 
 function teammateSystemPrompt(agentId: string, role: string): string {
-  return `你是 '${agentId}'，一名${role}。收到信箱里的 plan_request 后生成执行计划并调用 review_plan（带上消息里的 request_id）把审批结果回传 lead；收到 shutdown_request 后发送 shutdown_response 再退出。`;
+  return `你是 '${agentId}'，一名${role}。收到信箱里的 plan_request 后生成执行计划并调用 review_plan（带上消息里的 request_id）把审批结果回传 lead（它的信箱是 '${LEAD_ID}'）；收到 shutdown_request 后发送 shutdown_response 再退出。`;
 }
 
 // ============================================================
@@ -896,10 +896,7 @@ function* agentLoop(perform: PerformFn<S16Effect>) {
             break;
           }
           case 'check_inbox': {
-            const msgs = yield* perform({
-              type: 'CheckInbox',
-              input: { agentId: String(block.input['agentId'] ?? agentId) },
-            });
+            const msgs = yield* perform({ type: 'CheckInbox', input: { agentId } });
             output = msgs.length ? msgs.map((m) => `[${m.type}] ${m.from}: ${m.body}`).join('\n') : '信箱为空';
             break;
           }

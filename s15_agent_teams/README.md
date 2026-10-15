@@ -108,7 +108,7 @@ main: send_message(to=analyzer, …) / send_message(to=reviewer, …)
 analyzer 子循环: CheckInbox → Chat(轮1: bash) → Chat(轮2: 结果文本) → SendMessage(to=main, type=result)
 reviewer 子循环: 同上
       ↓
-main: check_inbox(main) → join 队友 → 读到 2 条 result → 结束
+main: check_inbox() → join 队友 → 读到 2 条 result → 结束
 ```
 
 ---

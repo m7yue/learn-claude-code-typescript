@@ -181,12 +181,11 @@ function logEvent(type: 'create' | 'bind' | 'remove' | 'keep', worktree: string,
 |------|------|
 | `bash` | 执行 shell 命令；`worktreeId` 指定在哪个 worktree 中执行（cwd 路由） |
 | `create_task` / `list_tasks` / `get_task` / `claim_task` / `complete_task` | s12 持久化任务系统（含 `worktree` 字段） |
-| `create_worktree` | 校验名称 → `git worktree add ... -b wt/<name> HEAD` |
-| `bind_worktree` | 写任务 `worktree` 字段（保持 `pending`，等待认领） |
-| `remove_worktree` | 变更守卫 → `git worktree remove --force` + `git branch -D` |
+| `create_worktree` | 校验名称 → `git worktree add ... -b wt/<name> HEAD`；带 `taskId` 时一并绑定任务 |
+| `bind_worktree` | 单独把任务绑到已存在的 worktree（写 `worktree` 字段，保持 `pending`） |
+| `remove_worktree` | 变更守卫 → `git worktree remove --force` + `git branch -D`；`discard_changes` 可强制 |
 
-> `create_worktree` 的 schema 里带有 `branch` 参数（历史遗留），实现中分支名统一派生为
-> `wt/<name>`。
+> 分支名统一派生为 `wt/<worktreeId>`，不由模型指定。
 
 ---
 

@@ -222,14 +222,14 @@ async function executeTool(block: ToolUseBlock): Promise<string> {
         .join('\n');
     }
     case 'get_task': {
-      // 两种参数名都接受：本仓用 task_id，工程层用 id
-      const taskId = String(block.input['task_id'] ?? block.input['id'] ?? '');
+      // 两种参数名都接受：章节用 taskId，工程层用 id
+      const taskId = String(block.input['taskId'] ?? block.input['id'] ?? '');
       const task = loadTask(taskId);
       if (!task) return `Error: Task ${taskId} not found`;
       return JSON.stringify(task, null, 2);
     }
     case 'claim_task': {
-      const taskId = String(block.input['task_id'] ?? '');
+      const taskId = String(block.input['taskId'] ?? '');
       const task = loadTask(taskId);
       if (!task) return `Error: Task ${taskId} not found`;
       if (task.status !== 'pending') return `Task ${taskId} is ${task.status}, cannot claim`;
@@ -243,7 +243,7 @@ async function executeTool(block: ToolUseBlock): Promise<string> {
       return `Claimed ${task.id} (${task.subject})`;
     }
     case 'complete_task': {
-      const taskId = String(block.input['task_id'] ?? '');
+      const taskId = String(block.input['taskId'] ?? '');
       const task = loadTask(taskId);
       if (!task) return `Error: Task ${taskId} not found`;
       if (task.status !== 'in_progress') return `Task ${taskId} is ${task.status}, cannot complete`;

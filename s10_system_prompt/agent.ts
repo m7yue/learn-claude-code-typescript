@@ -67,6 +67,8 @@ function assemblePrompt(context: PromptContext): string {
   return sections.join('\n\n');
 }
 
+const TOOLS = schemasFor('bash');
+
 // 缓存：key = JSON.stringify(context)
 let lastContextKey = '';
 let lastPrompt = '';
@@ -105,7 +107,7 @@ const s10Handlers = {
     const round = messages.filter(m => m.role === 'assistant').length;
     console.log(`\n[Chat] → 轮次 ${round + 1} (system: ${systemPrompt.length} 字符)`);
     await new Promise(r => setTimeout(r, 50));
-    const response = await callChat(mockLLM, messages, { tools: schemasFor('bash'), system: systemPrompt });
+    const response = await callChat(mockLLM, messages, { tools: TOOLS, system: systemPrompt });
     const tools = getToolUseBlocks(response).map(b => b.name).join(', ');
     console.log(`[LLM]  ← ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -148,7 +150,7 @@ function* agentLoop(perform: PerformFn<S10Effect>) {
 
   // 初始上下文
   let context: PromptContext = {
-    enabledTools: ['bash', 'read_file', 'write_file'],
+    enabledTools: TOOLS.map((t) => t.name),
     workspace: process.cwd(),
   };
 

@@ -6,8 +6,8 @@
  *   LoadSkill  — 加载指定技能的完整内容
  *
  * 双层架构：
- *   Layer 1（轻量，始终存在）: 技能名称 + 描述 → 注入 system prompt
- *   Layer 2（按需，较重）:    技能完整内容 → 工具调用时返回
+ *   Layer 1（轻量，始终存在）: 技能名称 + 描述 → 循环开始前注入 system prompt
+ *   Layer 2（按需，较重）:    技能完整内容 → 模型调 load_skill 时返回
  */
 
 import { runAgent } from '../runtime/core.ts';
@@ -75,32 +75,22 @@ function mockLLM(messages: Message[], skillDir: string): LLMResponse {
   const round = messages.filter(m => m.role === 'assistant').length;
 
   if (round === 0) {
-    // 第1轮：列出可用技能
+    // 第1轮：技能目录已经在 system prompt 里，直接取需要的那一个
     return {
       stop_reason: 'tool_use',
       content: [
-        { type: 'text', text: '我先看看有哪些可用的技能。' },
-        { type: 'tool_use', id: 'tool_001', name: 'list_skills', input: {} },
+        { type: 'text', text: '技能目录里已有 code-review，加载它的完整内容。' },
+        { type: 'tool_use', id: 'tool_001', name: 'load_skill', input: { name: 'code-review' } },
       ],
     };
   }
   if (round === 1) {
-    // 第2轮：加载需要的技能
-    return {
-      stop_reason: 'tool_use',
-      content: [
-        { type: 'text', text: '我需要用到代码审查技能，先加载它。' },
-        { type: 'tool_use', id: 'tool_002', name: 'load_skill', input: { name: 'code-review' } },
-      ],
-    };
-  }
-  if (round === 2) {
-    // 第3轮：使用加载的技能知识执行任务
+    // 第2轮：使用加载的技能知识执行任务
     return {
       stop_reason: 'tool_use',
       content: [
         { type: 'text', text: '已加载代码审查技能，现在执行审查。' },
-        { type: 'tool_use', id: 'tool_003', name: 'bash', input: { command: 'echo "审查完成"' } },
+        { type: 'tool_use', id: 'tool_002', name: 'bash', input: { command: 'echo "审查完成"' } },
       ],
     };
   }
@@ -119,7 +109,7 @@ const s07Handlers = {
       console.log(`[System] 包含技能目录 (${systemPrompt.length} 字符)`);
     }
     await new Promise(r => setTimeout(r, 50));
-    const response = await callChat((m) => mockLLM(m, systemPrompt ?? ''), messages, { tools: schemasFor('bash', 'list_skills', 'load_skill'), system: systemPrompt });
+    const response = await callChat((m) => mockLLM(m, systemPrompt ?? ''), messages, { tools: schemasFor('bash', 'load_skill'), system: systemPrompt });
     const tools = getToolUseBlocks(response).map(b => b.name).join(', ');
     console.log(`[LLM]  ← ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -208,11 +198,6 @@ function* agentLoop(perform: PerformFn<S07Effect>) {
         switch (block.name) {
           case 'bash':
             output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
-            break;
-          case 'list_skills':
-            // Layer 1：获取技能目录（轻量）
-            const list = yield* perform({ type: 'ListSkills', input: {} });
-            output = list.map(s => `${s.name}: ${s.description}`).join('\n');
             break;
           case 'load_skill':
             // Layer 2：加载完整技能内容（按需）

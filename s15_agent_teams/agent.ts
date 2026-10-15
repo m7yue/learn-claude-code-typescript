@@ -205,7 +205,7 @@ function mockLead(messages: Message[]): LLMResponse {
       stop_reason: 'tool_use',
       content: [
         { type: 'text', text: '检查队友回复。' },
-        { type: 'tool_use', id: 'm5', name: 'check_inbox', input: { agentId: LEAD_ID } },
+        { type: 'tool_use', id: 'm5', name: 'check_inbox', input: {} },
       ],
     };
   }
@@ -511,10 +511,7 @@ function* agentLoop(perform: PerformFn<S15Effect>) {
             break;
           }
           case 'check_inbox': {
-            const msgs = yield* perform({
-              type: 'CheckInbox',
-              input: { agentId: String(block.input['agentId'] ?? agentId) },
-            });
+            const msgs = yield* perform({ type: 'CheckInbox', input: { agentId } });
             output = msgs.length ? msgs.map((m) => `${m.from}: ${m.body}`).join('\n') : '信箱为空';
             break;
           }

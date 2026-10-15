@@ -83,7 +83,6 @@ export const TOOL_SPECS: Record<string, ToolSchema> = {
   ),
   todo_read: schema("todo_read", "读取当前待办列表。"),
   task: schema("task", "把子任务委派给子代理。", { task: str("子任务描述") }, ["task"]),
-  list_skills: schema("list_skills", "列出可用技能。"),
   load_skill: schema("load_skill", "按名称加载技能内容。", { name: str("技能名称") }, ["name"]),
   compact: schema(
     "compact",
@@ -134,23 +133,6 @@ export const TOOL_SPECS: Record<string, ToolSchema> = {
     ["taskId"],
   ),
   complete_task: schema("complete_task", "完成任务。", { taskId: str("任务 ID") }, ["taskId"]),
-  spawn_background: schema(
-    "spawn_background",
-    "启动一个后台任务。",
-    {
-      taskId: str("后台任务标识"),
-      description: str("任务描述"),
-      durationMs: int("（可选）模拟耗时（毫秒）"),
-    },
-    ["taskId", "description"],
-  ),
-  collect_notifications: schema("collect_notifications", "收集已完成的后台任务通知。"),
-  wait_background: schema(
-    "wait_background",
-    "等待后台任务完成。",
-    { taskId: str("后台任务标识") },
-    ["taskId"],
-  ),
   schedule_cron: schema(
     "schedule_cron",
     "注册定时任务（5 字段 cron）。",
@@ -174,14 +156,16 @@ export const TOOL_SPECS: Record<string, ToolSchema> = {
   send_message: schema(
     "send_message",
     "给队友发送消息。",
-    { to: str("收件人"), body: str("消息内容"), from: str("（可选）发件人") },
+    { to: str("收件人"), body: str("消息内容") },
     ["to", "body"],
   ),
   check_inbox: schema(
     "check_inbox",
-    "读取并清空收件箱。",
-    { agentId: str("要读取的收件箱标识") },
-    ["agentId"],
+    "读取并清空自己的收件箱。",
+    {
+      expectType: str("（可选，s20）一直等到这个类型的消息到达再返回"),
+      waitMs: int("（可选，s20）等待上限（毫秒）"),
+    },
   ),
   request_plan: schema(
     "request_plan",
@@ -215,14 +199,20 @@ export const TOOL_SPECS: Record<string, ToolSchema> = {
   auto_claim: schema("auto_claim", "自动认领一个任务。", { owner: str("认领者标识") }, ["owner"]),
   create_worktree: schema(
     "create_worktree",
-    "创建 git worktree 隔离环境。",
-    { worktreeId: str("worktree 标识"), branch: str("分支名") },
-    ["worktreeId", "branch"],
+    "创建 git worktree 隔离环境，分支名自动派生为 wt/<worktreeId>。",
+    {
+      worktreeId: str("worktree 标识"),
+      taskId: str("（可选）同时把这个任务绑定到该 worktree"),
+    },
+    ["worktreeId"],
   ),
   remove_worktree: schema(
     "remove_worktree",
     "移除 worktree。",
-    { worktreeId: str("worktree 标识") },
+    {
+      worktreeId: str("worktree 标识"),
+      discard_changes: bool("（可选）丢弃未提交变更，强制移除"),
+    },
     ["worktreeId"],
   ),
   bind_worktree: schema(

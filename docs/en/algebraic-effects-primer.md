@@ -111,7 +111,7 @@ A Coding Agent constantly interacts with the real world:
 - create tasks
 - call sub-agents
 - load memories
-- connect MCP tools
+- call MCP tools
 
 These actions all carry risks and need to be observed, tested, and replaceable. If Agent logic directly does `await readFile()` or `await exec()` everywhere, the system quickly becomes hard to control.
 

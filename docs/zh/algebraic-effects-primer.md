@@ -111,7 +111,7 @@ Coding Agent 会不断接触真实世界：
 - 创建任务
 - 调用子 Agent
 - 加载记忆
-- 连接 MCP 工具
+- 调用 MCP 工具
 
 这些动作都有风险，也都需要被观察、测试和替换。如果 Agent 逻辑里到处直接 `await readFile()`、`await exec()`，系统很快会变得难以控制。
 
