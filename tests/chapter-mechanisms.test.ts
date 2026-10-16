@@ -1,10 +1,10 @@
 /**
- * 机制回归守卫：断言「各章 README 声明的机制」在 agent.ts 中确有对应实现。
+ * 机制回归守卫：断言「各章 README 声明的机制」在章节源码中确有对应实现。
  *
  * 背景：本仓曾出现"文档声称实现了机制、代码却用硬编码/mock 顶替"的情况
  * （如 s14 无调度线程、s08 摘要是硬编码、s12 启动清空任务）。e2e 只能证明
  * 章节能跑通，无法证明机制真实存在。这里用源码模式匹配做防回归：
- * 每个被修过的章节，必须能在 agent.ts 里找到该机制的关键代码痕迹。
+ * 每个被修过的章节，必须能在章节源码里找到该机制的关键代码痕迹。
  *
  * 说明：这是"关键痕迹"检查，不是语义证明；配合 e2e（能运行）与人工核对
  * （输出体现机制）共同构成验证。
@@ -12,11 +12,23 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * 章节源码 = 该章节目录下的所有 .ts。
+ *
+ * 只看 agent.ts 会漏掉被拆出去的演示脚手架（如 s08 的 demo.ts）。
+ * 逐个文件匹配，而不是把几个文件拼成一整段 —— 拼接会让 `[\s\S]{0,500}?`
+ * 这类跨行模式把两个文件里无关的两件事凑成一次命中。
+ */
+async function chapterSources(dir: string): Promise<string[]> {
+  const files = (await readdir(join(root, dir))).filter((f) => f.endsWith(".ts"));
+  return Promise.all(files.map((f) => readFile(join(root, dir, f), "utf8")));
+}
 
 interface Check {
   /** 该机制的人类可读描述，失败时用于报错。 */
@@ -92,6 +104,27 @@ const expectations: Record<string, Check[]> = {
       what: "大输出来自真实文件，不再是按命令名造的特判",
       match: /buildDemoLog\(DEMO_BIG_BYTES\)/,
       absent: /'L'\.repeat\(210_000\)/,
+    },
+    {
+      what: "bash 的工作目录收进演示目录",
+      match: /cwd: DEMO_ABS/,
+    },
+    {
+      what: "系统提示词里告知的工作目录与 bash 的 cwd 是同一个",
+      match: /baseSystemPrompt\(DEMO_ABS\)/,
+    },
+    {
+      what: "应急判定用仓库共用的 classifyError，不再自写子串匹配",
+      match: /classifyError\(err\)/,
+      absent: /includes\('too many tokens'\)/,
+    },
+    {
+      what: "压缩后把最初那条用户请求接回来",
+      match: /originalRequest\(messages\)/,
+    },
+    {
+      what: "transcript 文件名带递增序号，相隔一秒内的两次压缩不会互相覆盖",
+      match: /transcript_\$\{stamp\}_\$\{transcriptSeq\}/,
     },
   ],
   "s09_memory": [
@@ -192,8 +225,8 @@ const simulatedChapters = [
 test("模拟章节的 system prompt 里说明了 bash 是模拟的", async () => {
   const missing: string[] = [];
   for (const dir of simulatedChapters) {
-    const source = await readFile(join(root, dir, "agent.ts"), "utf8");
-    if (!source.includes("本教学演示中 bash 是模拟的")) missing.push(dir);
+    const sources = await chapterSources(dir);
+    if (!sources.some((s) => s.includes("本教学演示中 bash 是模拟的"))) missing.push(dir);
   }
   assert.deepEqual(
     missing,
@@ -204,9 +237,14 @@ test("模拟章节的 system prompt 里说明了 bash 是模拟的", async () =>
 
 for (const [dir, checks] of Object.entries(expectations)) {
   test(`机制守卫: ${dir}`, async () => {
-    const source = await readFile(join(root, dir, "agent.ts"), "utf8");
+    const sources = await chapterSources(dir);
     const missing = checks
-      .filter((c) => (c.match ? !c.match.test(source) : false) || (c.absent ? c.absent.test(source) : false))
+      .filter((check) => {
+        const { match, absent } = check;
+        const hit = match ? sources.some((s) => match.test(s)) : true;
+        const bad = absent ? sources.some((s) => absent.test(s)) : false;
+        return !hit || bad;
+      })
       .map((c) => c.what);
     assert.deepEqual(missing, [], `${dir} 缺少以下真实机制（或旧写法又回来了）:\n${missing.join("\n")}`);
   });
@@ -215,9 +253,13 @@ for (const [dir, checks] of Object.entries(expectations)) {
 test("章节不再以 process.cwd() 作为工作区基准（注释里的说明不算）", async () => {
   const offenders: string[] = [];
   for (const dir of chapters) {
-    const raw = await readFile(join(root, dir, "agent.ts"), "utf8");
-    const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-    if (/process\.cwd\(\)/.test(code)) offenders.push(dir);
+    for (const raw of await chapterSources(dir)) {
+      const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+      if (/process\.cwd\(\)/.test(code)) {
+        offenders.push(dir);
+        break;
+      }
+    }
   }
   assert.deepEqual(
     offenders,
@@ -229,19 +271,19 @@ test("章节不再以 process.cwd() 作为工作区基准（注释里的说明�
 test("全仓章节不再把持久化写到 os.tmpdir()", async () => {
   const offenders: string[] = [];
   for (const dir of chapters) {
-    const source = await readFile(join(root, dir, "agent.ts"), "utf8");
-    if (/os\.tmpdir\(\)/.test(source)) offenders.push(dir);
+    const sources = await chapterSources(dir);
+    if (sources.some((s) => /os\.tmpdir\(\)/.test(s))) offenders.push(dir);
   }
   assert.deepEqual(offenders, [], `以下章节仍把状态写到 os.tmpdir():\n${offenders.join("\n")}`);
 });
 
 test("s12 不再启动即清空任务；s17 不再用 globalThis 侧信道", async () => {
-  const s12 = await readFile(join(root, "s12_task_system/agent.ts"), "utf8");
-  assert.ok(!/cleanupTasks/.test(s12), "s12 不应再有 cleanupTasks（会删光任务，破坏重启恢复）");
+  const s12 = await chapterSources("s12_task_system");
+  assert.ok(!s12.some((s) => /cleanupTasks/.test(s)), "s12 不应再有 cleanupTasks（会删光任务，破坏重启恢复）");
 
-  const s17 = await readFile(join(root, "s17_autonomous_agents/agent.ts"), "utf8");
+  const s17 = await chapterSources("s17_autonomous_agents");
   assert.ok(
-    !/globalThis\s*\.\s*_pendingTaskId\s*=/.test(s17),
+    !s17.some((s) => /globalThis\s*\.\s*_pendingTaskId\s*=/.test(s)),
     "s17 不应再用 globalThis._pendingTaskId 侧信道赋值",
   );
 });

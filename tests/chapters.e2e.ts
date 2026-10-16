@@ -48,7 +48,18 @@ const chapters: Array<[dir: string, marker: string]> = [
 const demoArtifacts: Record<string, string[]> = {
   s02_tool_use: [".output/s02_output.txt"],
   s07_skill_loading: [".output/review-target.js"],
+  s08_context_compact: [
+    ".output/demo/TASK.md",
+    ".output/demo/bulk.log",
+    ".output/demo/large.log",
+    ".output/demo/notes/note-01.md",
+  ],
   s20_comprehensive: [".output/report.md", ".output/worker-note.md"],
+};
+
+/** 各章 demo 必须在 stdout 里留下的机制痕迹：能跑通（完成标记）不等于演示了本章声称的机制。 */
+const requiredStdout: Record<string, string[]> = {
+  s08_context_compact: ["[L1 Snip]", "[L2 Micro]", "[L3 Persist]", "[auto compact]"],
 };
 
 for (const [dir, marker] of chapters) {
@@ -74,6 +85,12 @@ for (const [dir, marker] of chapters) {
       assert.ok(
         existsSync(join(workspace, dir, rel)),
         `${dir} 未在工作区生成 ${rel}（工作区: ${workspace}）`,
+      );
+    }
+    for (const marker of requiredStdout[dir] ?? []) {
+      assert.ok(
+        stdout.includes(marker),
+        `${dir} 输出里没有 ${marker}：本章声称的机制没被演示到`,
       );
     }
   });

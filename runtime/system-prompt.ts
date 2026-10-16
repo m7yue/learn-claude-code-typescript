@@ -19,9 +19,15 @@ export const ENVIRONMENT_PROMPT: string =
     ? "Windows：bash 工具通过 cmd.exe 运行，请使用 cmd.exe 语法而非 Unix Bash 或 PowerShell 语法，并优先使用专用文件工具进行文件操作"
     : "类 Unix 系统：bash 工具运行系统 shell";
 
-/** 基础句：身份 + 工作目录 + 运行环境。 */
-export function baseSystemPrompt(): string {
-  return `你是一个编码助手，工作目录：${WORKDIR}。运行环境：${ENVIRONMENT_PROMPT}。`;
+/**
+ * 基础句：身份 + 工作目录 + 运行环境。
+ *
+ * workdir 默认是工作区根目录；章节若把工具收进某个更小的目录（s08 的演示目录），
+ * 必须把实际目录传进来 —— 提示词里说的工作目录要和工具的 cwd 一致，否则模型会按
+ * 提示词去摸一个它其实不在的位置。
+ */
+export function baseSystemPrompt(workdir: string = WORKDIR): string {
+  return `你是一个编码助手，工作目录：${workdir}。运行环境：${ENVIRONMENT_PROMPT}。`;
 }
 
 /** 基础句 + 各章节子句（空格分隔）；空子句自动忽略。 */
