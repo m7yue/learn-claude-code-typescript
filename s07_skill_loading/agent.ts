@@ -8,6 +8,10 @@
  * 双层架构：
  *   Layer 1（轻量，始终存在）: 技能名称 + 描述 → 循环开始前注入 system prompt
  *   Layer 2（按需，较重）:    技能完整内容 → 模型调 load_skill 时返回
+ *
+ * 演示用的审查目标：运行前在工作区生成 s07_skill_loading/.output/review-target.js
+ * （一个埋了几处典型问题的模块）。用户消息指向它，read_file 真实读取，
+ * 模型加载技能后才有真东西可审，不会因为看不到代码而空转或凭空编结论。
  */
 
 import { runAgent } from '../runtime/core.ts';
@@ -17,6 +21,7 @@ import { extractText, getToolUseBlocks } from '../runtime/response.ts';
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { baseSystemPrompt } from '../runtime/system-prompt.ts';
+import { WORKSPACE_ROOT } from '../runtime/workspace.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,12 +34,15 @@ interface ChatEffect extends Effect<'Chat', { messages: Message[]; systemPrompt?
 
 interface BashExecEffect extends Effect<'BashExec', { command: string }, string> {}
 
+// 真实读取工作区内的文件（审查目标要靠它才读得到）
+interface ReadFileEffect extends Effect<'ReadFile', { path: string; limit?: number }, string> {}
+
 // s07 新增：技能管理
 interface ListSkillsEffect extends Effect<'ListSkills', Record<string, never>, Array<{ name: string; description: string }>> {}
 
 interface LoadSkillEffect extends Effect<'LoadSkill', { name: string }, string> {} // 技能的完整 Markdown 内容
 
-type S07Effect = ChatEffect | BashExecEffect | ListSkillsEffect | LoadSkillEffect;
+type S07Effect = ChatEffect | BashExecEffect | ReadFileEffect | ListSkillsEffect | LoadSkillEffect;
 
 // ============================================================
 // Part 2: Handler 实现
@@ -43,6 +51,67 @@ type S07Effect = ChatEffect | BashExecEffect | ListSkillsEffect | LoadSkillEffec
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** 技能目录：每个技能一个子目录，内含 SKILL.md（与本文件同级）。 */
 const SKILLS_DIR = path.join(__dirname, 'skills');
+
+/** 工作区根目录（可用 AGENT_WORKSPACE 覆盖）——read_file 以它为界。 */
+const WORKDIR = WORKSPACE_ROOT;
+
+/** 演示用的审查目标（工作区相对路径），每次运行前重新生成。 */
+const REVIEW_TARGET = 's07_skill_loading/.output/review-target.js';
+
+/** 审查目标的内容：表面是个普通模块，实则埋了几处典型问题。 */
+const REVIEW_TARGET_CONTENT = `/**
+ * 用户信息查询与文件上传模块（演示用，请勿模仿）。
+ */
+import { execSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+const DATA_DIR = '/var/app/uploads';
+const DB_PASSWORD = 'p@ssw0rd-2024';
+const API_KEY = 'sk-live-9f8e7d6c5b4a3210';
+
+const cache = [];
+
+export function findUser(db, name) {
+  const sql = "SELECT * FROM users WHERE name = '" + name + "'";
+  console.log('[查询] ' + sql + '（口令: ' + DB_PASSWORD + '）');
+  return db.query(sql);
+}
+
+export function readUpload(fileName) {
+  return fs.readFileSync(path.join(DATA_DIR, fileName), 'utf8');
+}
+
+export function pingHost(host) {
+  return execSync('ping -c 1 ' + host).toString();
+}
+
+export function issueToken() {
+  return Math.random().toString(36).slice(2) + API_KEY.slice(0, 8);
+}
+
+export function firstRole(users) {
+  return users[0].role;
+}
+`;
+
+/** 路径边界：只允许读写工作区内的路径，越界直接抛错。 */
+function safePath(p: string): string {
+  const resolved = path.resolve(WORKDIR, p);
+  const rel = path.relative(WORKDIR, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`[安全] 路径越界: ${p}`);
+  }
+  return resolved;
+}
+
+/** 生成审查目标文件，让真实模型有确定的、可对照的审查对象。 */
+function prepareReviewTarget(): void {
+  const safe = safePath(REVIEW_TARGET);
+  fs.mkdirSync(path.dirname(safe), { recursive: true });
+  fs.writeFileSync(safe, REVIEW_TARGET_CONTENT, 'utf8');
+  console.log(`[准备] 已建好审查目标: ${REVIEW_TARGET} (${REVIEW_TARGET_CONTENT.length} 字符)`);
+}
 
 // 解析 SKILL.md 的 YAML frontmatter（正则提取，避免引入额外依赖）
 function parseSkillMd(content: string): { name: string; description: string } {
@@ -71,7 +140,7 @@ const SKILL_REGISTRY_FALLBACK: Record<string, { description: string; content: st
   },
 };
 
-function mockLLM(messages: Message[], skillDir: string): LLMResponse {
+function mockLLM(messages: Message[]): LLMResponse {
   const round = messages.filter(m => m.role === 'assistant').length;
 
   if (round === 0) {
@@ -85,18 +154,29 @@ function mockLLM(messages: Message[], skillDir: string): LLMResponse {
     };
   }
   if (round === 1) {
-    // 第2轮：使用加载的技能知识执行任务
+    // 第2轮：按技能要求先读代码，再谈审查
     return {
       stop_reason: 'tool_use',
       content: [
-        { type: 'text', text: '已加载代码审查技能，现在执行审查。' },
-        { type: 'tool_use', id: 'tool_002', name: 'bash', input: { command: 'echo "审查完成"' } },
+        { type: 'text', text: `已加载代码审查技能，先读取 ${REVIEW_TARGET}。` },
+        { type: 'tool_use', id: 'tool_002', name: 'read_file', input: { path: REVIEW_TARGET } },
       ],
     };
   }
+  // 第3轮：给出审查结论（与目标文件里埋的问题一一对应）
   return {
     stop_reason: 'end_turn',
-    content: [{ type: 'text', text: '代码审查完成，发现3个建议改进点，无严重问题。' }],
+    content: [
+      {
+        type: 'text',
+        text: [
+          `审查完成（${REVIEW_TARGET}）：6 个严重问题、2 个建议改进。`,
+          '严重：findUser 拼接 SQL（注入）；pingHost 拼接 host（命令注入）；readUpload 未校验 fileName（路径穿越）；',
+          '严重：issueToken 用 Math.random 发令牌；硬编码 DB_PASSWORD / API_KEY；把口令写进日志；',
+          '建议：firstRole 未处理空数组；未使用的 cache 删掉。',
+        ].join('\n'),
+      },
+    ],
   };
 }
 
@@ -118,7 +198,7 @@ const s07Handlers = {
       console.log(`[System] 包含技能目录 (${systemPrompt.length} 字符)`);
     }
     await new Promise(r => setTimeout(r, 50));
-    const response = await callChat((m) => mockLLM(m, systemPrompt ?? ''), messages, { tools: schemasFor('bash', 'load_skill'), system: systemPrompt });
+    const response = await callChat(mockLLM, messages, { tools: schemasFor('bash', 'read_file', 'load_skill'), system: systemPrompt });
     const tools = getToolUseBlocks(response).map(b => b.name).join(', ');
     console.log(`[LLM]  ← ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -127,6 +207,20 @@ const s07Handlers = {
   BashExec: async (effect: BashExecEffect): Promise<string> => {
     console.log(`[BashExec] → ${effect.input.command}`);
     return `(执行: ${effect.input.command})`;
+  },
+
+  ReadFile: async (effect: ReadFileEffect): Promise<string> => {
+    const { path: filePath, limit } = effect.input;
+    console.log(`[ReadFile] → ${filePath}`);
+    try {
+      const content = fs.readFileSync(safePath(filePath), 'utf8');
+      const lines = content.split('\n');
+      const result = limit ? lines.slice(0, limit).join('\n') : content;
+      console.log(`[ReadFile] ← ${result.length} 字符`);
+      return result;
+    } catch {
+      return `[错误] 无法读取文件: ${filePath}`;
+    }
   },
 
   ListSkills: async (_effect: ListSkillsEffect) => {
@@ -190,10 +284,11 @@ function* agentLoop(perform: PerformFn<S07Effect>) {
     '\n\n' +
     `可用技能：\n${skillDirectory}\n\n当某个技能适用时，用 load_skill 读取完整说明。` +
     '\n\n' +
-    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。';
+    '本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出；' +
+    '要看文件内容请用 read_file，它真实读取工作区内的文件。';
 
   const messages: Message[] = [
-    { role: 'user', content: '帮我做一次代码审查，重点检查安全问题。' },
+    { role: 'user', content: `审查 ${REVIEW_TARGET}，重点检查安全问题。` },
   ];
 
   while (true) {
@@ -212,6 +307,15 @@ function* agentLoop(perform: PerformFn<S07Effect>) {
         switch (block.name) {
           case 'bash':
             output = yield* perform({ type: 'BashExec', input: { command: block.input['command'] as string } });
+            break;
+          case 'read_file':
+            output = yield* perform({
+              type: 'ReadFile',
+              input: {
+                path: block.input['path'] as string,
+                limit: block.input['limit'] as number | undefined,
+              },
+            });
             break;
           case 'load_skill':
             // Layer 2：加载完整技能内容（按需）
@@ -243,6 +347,9 @@ function* agentLoop(perform: PerformFn<S07Effect>) {
 // ============================================================
 
 console.log('[S07] Skill Loading 启动\n');
+
+// 先备好审查目标，模型才有确定的审查对象（内容每次运行都一样）
+prepareReviewTarget();
 
 const result = await runAgent<S07Effect, string>(agentLoop, s07Handlers);
 

@@ -135,19 +135,30 @@ ListSkills → [{ name: 'code-review', description: '代码质量审查...' }, .
 npm run s07
 ```
 
+运行前会先在工作区生成审查目标 `s07_skill_loading/.output/review-target.js` —— 一个埋了 SQL 注入、命令注入、路径穿越、硬编码凭据等典型问题的模块。用户消息指向它，模型加载技能后用 `read_file` 真实读取，审查结论可以逐条对照（bash 在本章仍是模拟的）。
+
 输出示例：
 ```
 [S07] Skill Loading 启动
 
+[准备] 已建好审查目标: s07_skill_loading/.output/review-target.js (834 字符)
 [ListSkills] 发现 3 个技能:
   - agent-builder: 设计和构建 AI Agent 系统...
   - code-review: 对代码进行全面的质量审查...
   - mcp-builder: 构建 MCP（Model Context Protocol）服务器...
 
 [Chat] → 轮次 1
-[System] 包含技能目录 (642 字符)
+[System] 包含技能目录 (802 字符)
 [LLM]  ← tool_use, 工具: load_skill
 [LoadSkill] 加载技能: code-review (568 字符，来自文件)
+
+[Chat] → 轮次 2
+[LLM]  ← tool_use, 工具: read_file
+[ReadFile] → s07_skill_loading/.output/review-target.js
+[ReadFile] ← 834 字符
+
+[Chat] → 轮次 3
+[LLM]  ← end_turn
 ...
 ```
 

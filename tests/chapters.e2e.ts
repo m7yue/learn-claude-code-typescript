@@ -47,6 +47,7 @@ const chapters: Array<[dir: string, marker: string]> = [
 /** 各章演示产物（相对章节目录）：应生成在工作区里，而不是仓库里。 */
 const demoArtifacts: Record<string, string[]> = {
   s02_tool_use: [".output/s02_output.txt"],
+  s07_skill_loading: [".output/review-target.js"],
   s20_comprehensive: [".output/report.md", ".output/worker-note.md"],
 };
 

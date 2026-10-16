@@ -81,6 +81,7 @@ const expectations: Record<string, Check[]> = {
   "s07_skill_loading": [
     { what: "load_skill 先过名字白名单再拼路径", match: /isKnownSkill\(name\)[\s\S]{0,300}?path\.join\(SKILLS_DIR/ },
     { what: "技能名白名单正则", match: /SKILL_NAME_RE/ },
+    { what: "read_file 真实读取且以工作区为界", match: /fs\.readFileSync\(safePath\(/ },
   ],
   "s08_context_compact": [
     { what: "摘要走真实 LLM 调用", match: /callChat\(\s*mockSummarizer/ },
