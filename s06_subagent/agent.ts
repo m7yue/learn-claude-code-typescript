@@ -16,6 +16,7 @@ import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import { WORKSPACE_ROOT } from '../runtime/workspace.ts';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -95,7 +96,10 @@ function mockSubLLM(messages: Message[]): LLMResponse {
 // 子 Agent 专用的基础 Handlers（不含 Delegate）
 // real 模式注入的 system prompt，引导模型使用工具完成任务。
 // mock 模式不读取该字段，故零配置运行行为不变。
-const SUB_SYSTEM_PROMPT = buildSystemPrompt('使用 bash、read_file 完成被委派的子任务，然后返回简洁的最终结论。');
+const SUB_SYSTEM_PROMPT = buildSystemPrompt(
+  '你是子代理：只有这条任务描述，看不到主 Agent 的历史。用 bash、read_file 完成任务（命令以只读为主），' +
+    '最后只返回最终结论本身（结论 + 关键依据，控制在 5 行以内），不要复述中间过程、不要粘贴命令原文或原始输出。',
+);
 
 const subHandlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
@@ -112,9 +116,21 @@ const subHandlers = {
     return response;
   },
 
+  // 真实执行：mock 只替代模型调用，命令本身交给系统 shell
   BashExec: async (effect: BashExecEffect): Promise<string> => {
-    console.log(`  [子] BashExec → ${effect.input.command}`);
-    return `(子 Agent 执行: ${effect.input.command})`;
+    const { command } = effect.input;
+    console.log(`  [子] BashExec → ${command}`);
+    const r = spawnSync(command, {
+      shell: true,
+      cwd: WORKDIR,
+      encoding: 'utf8',
+      timeout: 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (r.error) return `Error: ${r.error.message}`;
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+    console.log(`  [子] BashExec ← ${out.slice(0, 60).replace(/\n/g, ' ')}`);
+    return out ? out.slice(0, 50_000) : '(no output)';
   },
 
   ReadFile: async (effect: ReadFileEffect): Promise<string> => {
@@ -186,7 +202,11 @@ function createSubAgentFactory(task: string, maxRounds: number): AgentFactory<Su
 
 // real 模式注入的 system prompt，引导模型使用工具完成任务。
 // mock 模式不读取该字段，故零配置运行行为不变。
-const MAIN_SYSTEM_PROMPT = buildSystemPrompt('使用 task 工具进行聚焦探索或处理自成一体的子任务；自身也可用 bash、read_file。');
+const MAIN_SYSTEM_PROMPT = buildSystemPrompt(
+  '探索类、需要多次工具调用才能回答的子任务，用 task 委派给子代理——子代理有独立上下文，只把结论带回来；' +
+    '拿到结论后就据此汇总回答，不要再自己重跑一遍探索（最多用一条只读命令做确认），不要把中间过程堆进自己的上下文。' +
+    '用 bash 时以只读命令为主（ls、cat、find 等）。最终汇总保持简短，几行以内。',
+);
 
 const s06Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
@@ -203,9 +223,21 @@ const s06Handlers = {
     return response;
   },
 
+  // 真实执行：mock 只替代模型调用，命令本身交给系统 shell
   BashExec: async (effect: BashExecEffect): Promise<string> => {
-    console.log(`[主] BashExec → ${effect.input.command}`);
-    return `(主 Agent 执行: ${effect.input.command})`;
+    const { command } = effect.input;
+    console.log(`[主] BashExec → ${command}`);
+    const r = spawnSync(command, {
+      shell: true,
+      cwd: WORKDIR,
+      encoding: 'utf8',
+      timeout: 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (r.error) return `Error: ${r.error.message}`;
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+    console.log(`[主] BashExec ← ${out.slice(0, 60).replace(/\n/g, ' ')}`);
+    return out ? out.slice(0, 50_000) : '(no output)';
   },
 
   // 与子 Agent 的 ReadFile 同一套实现：主 Agent 也真读磁盘
@@ -244,7 +276,7 @@ const s06Handlers = {
 
 function* agentLoop(perform: PerformFn<S06Effect>) {
   const messages: Message[] = [
-    { role: 'user', content: '分析项目的依赖，然后告诉我这个项目用了什么技术栈。' },
+    { role: 'user', content: '先摸清这个项目：用了哪些技术、目录怎么组织、怎么跑起来，然后用三五句话给我一份技术栈总结。' },
   ];
 
   while (true) {
@@ -308,4 +340,4 @@ console.log('[S06] Subagent 启动\n');
 
 const result = await runAgent<S06Effect, string>(agentLoop, s06Handlers);
 
-console.log('\n[S06] 完成:', result.slice(0, 100));
+console.log('\n[S06] 完成:', result);

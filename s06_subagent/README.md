@@ -144,10 +144,17 @@ function* agentLoop(perform: PerformFn<S06Effect>) {
 ## 运行
 
 ```bash
+# 默认离线 mock：mock 只替换"模型"本身，委派与子 Agent 循环都是真实代码
 npm run s06
+
+# 真实模型（需 .env 中的 token / MODEL_ID）：bash 与 read_file 都真执行
+AGENT_MODE=real npm run s06
 ```
 
-输出示例：
+real 模式下演示的是开放式探索（用了哪些技术、目录怎么组织、怎么跑起来）：主 Agent 把这个多步任务交给
+`task`，子 Agent 在自己的上下文里跑 bash / read_file，只把结论带回来——主 Agent 的历史里看不到中间过程。
+
+输出示例（mock）：
 ```
 [S06] Subagent 启动
 

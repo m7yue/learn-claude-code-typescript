@@ -67,6 +67,16 @@ const expectations: Record<string, Check[]> = {
       match: /\[主\] ReadFile[\s\S]{0,500}?fs\.readFileSync/,
       absent: /\(主 Agent 读取/,
     },
+    {
+      what: "主 Agent 的 BashExec 真执行（不再回显命令文本）",
+      match: /\[主\] BashExec[\s\S]{0,400}?spawnSync\(command/,
+      absent: /\(主 Agent 执行/,
+    },
+    {
+      what: "子 Agent 的 BashExec 真执行（不再回显命令文本）",
+      match: /\[子\] BashExec[\s\S]{0,400}?spawnSync\(command/,
+      absent: /\(子 Agent 执行/,
+    },
   ],
   "s07_skill_loading": [
     { what: "load_skill 先过名字白名单再拼路径", match: /isKnownSkill\(name\)[\s\S]{0,300}?path\.join\(SKILLS_DIR/ },

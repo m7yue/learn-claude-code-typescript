@@ -82,7 +82,12 @@ export const TOOL_SPECS: Record<string, ToolSchema> = {
     ["todos"],
   ),
   todo_read: schema("todo_read", "读取当前待办列表。"),
-  task: schema("task", "把子任务委派给子代理。", { task: str("子任务描述") }, ["task"]),
+  task: schema(
+    "task",
+    "把子任务委派给子代理：子代理有独立上下文与工具集，只把最终结论带回。适合需要多步工具调用、会产生大量中间输出的探索类子任务。",
+    { task: str("子任务描述；子代理看不到主对话历史，描述需自包含") },
+    ["task"],
+  ),
   load_skill: schema("load_skill", "按名称加载技能内容。", { name: str("技能名称") }, ["name"]),
   compact: schema(
     "compact",
