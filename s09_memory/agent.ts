@@ -4,9 +4,9 @@
  * 本章新增 5 个 Effect：
  *   ReadMemory          — 读取记忆索引或单个记忆文件（真实文件 I/O）
  *   WriteMemory         — 写入新记忆（附 YAML frontmatter，真实文件 I/O）
- *   SelectMemory        — 用真实 LLM 调用按上下文挑选相关记忆（关键词回退）
- *   ExtractMemories     — 每轮结束后用真实 LLM 调用抽取新记忆并写入磁盘
- *   ConsolidateMemories — 文件数达阈值时用真实 LLM 调用合并/去重记忆
+ *   SelectMemory        — 按上下文挑选相关记忆：模型从目录里选出相关下标
+ *   ExtractMemories     — 每轮结束后抽取新记忆并写入磁盘
+ *   ConsolidateMemories — 文件数达阈值时合并/去重记忆
  *
  * 记忆生命周期：
  *   进场 — 读 MEMORY.md 索引注入 system；用 SelectMemory 挑出相关记忆，
@@ -40,10 +40,12 @@ import { extractText, getToolUseBlocks } from '../runtime/response.ts';
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { baseSystemPrompt } from '../runtime/system-prompt.ts';
+import { classifyError } from '../runtime/errors.ts';
 import { MEMORY_DIR, MEMORY_INDEX_PATH, WORKSPACE_ROOT } from '../runtime/workspace.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 // ============================================================
 // Part 1: Effect 类型定义
@@ -100,13 +102,16 @@ type S09Effect =
 
 const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project', 'reference'];
 
-// 解析 `---` 包裹的 YAML frontmatter（扁平 k: v）。
+// 解析文件开头 `---` 包裹的 YAML frontmatter（扁平 k: v）。
+// 只认开头这一段：正文里再出现 `---`（Markdown 分隔线、嵌套代码块）不是结束符，
+// 也不会像按分隔符切分那样丢掉正文的后半段。
 function parseFrontmatter(text: string): { meta: Record<string, string>; body: string } {
-  if (!text.startsWith('---')) return { meta: {}, body: text };
-  const parts = text.split('---', 3); // 最多切出 3 段；正文里若再出现 `---`，其后的内容会被丢弃。
-  if (parts.length < 3) return { meta: {}, body: text };
+  const lines = (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).split(/\r?\n/);
+  if (lines[0]?.trim() !== '---') return { meta: {}, body: text.trim() };
+  const end = lines.findIndex((line, i) => i > 0 && line.trim() === '---');
+  if (end < 0) return { meta: {}, body: text.trim() };
   const meta: Record<string, string> = {};
-  for (const line of parts[1].trim().split(/\r?\n/)) {
+  for (const line of lines.slice(1, end)) {
     const idx = line.indexOf(':');
     if (idx >= 0) {
       const key = line.slice(0, idx).trim();
@@ -114,12 +119,17 @@ function parseFrontmatter(text: string): { meta: Record<string, string>; body: s
       if (key) meta[key] = value;
     }
   }
-  return { meta, body: parts[2].trim() };
+  return { meta, body: lines.slice(end + 1).join('\n').trim() };
 }
 
 // 把记忆名转成安全的文件名：小写，字母数字与 . _ - 之外的字符一律换成连字符。
+// 名字里一个 ASCII 字母数字都没有（例如整名是中文）时上面的规则会清空结果，
+// 此时用名字的短哈希兜底。兜底名不能是 `memory`：在大小写不敏感的文件系统
+// （macOS / Windows）上 memory.md 就是索引文件 MEMORY.md，撞名会直接毁掉索引。
 function slugify(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[.-]+/, '') || 'memory';
+  const slug = name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[.-]+/, '');
+  if (slug && slug !== 'memory') return slug;
+  return `memory-${createHash('sha256').update(name).digest('hex').slice(0, 8)}`;
 }
 
 // 记忆文件列表（按文件名排序，排除索引）。
@@ -127,11 +137,17 @@ interface MemoryFile extends MemoryEntry {
   filename: string;
 }
 
+// 索引名按大小写不敏感比较：macOS / Windows 上磁盘里存的名字可能是 memory.md，
+// 它与 MEMORY.md 是同一个文件，必须一起排除，否则索引会把自己当成一条记忆。
+function isIndexFile(filename: string): boolean {
+  return filename.toLowerCase() === 'memory.md';
+}
+
 function sortedMemoryFileNames(): string[] {
   if (!fs.existsSync(MEMORY_DIR)) return [];
   return fs
     .readdirSync(MEMORY_DIR)
-    .filter((f) => f.endsWith('.md') && f !== 'MEMORY.md')
+    .filter((f) => f.endsWith('.md') && !isIndexFile(f))
     .sort();
 }
 
@@ -177,6 +193,11 @@ function memoryFilePath(filename: string): string | null {
   return filePath;
 }
 
+// frontmatter 是一行一个键，值里的换行会把后面的行挤成无效行，落盘前折成空格。
+function singleLine(value: string): string {
+  return value.replace(/\s*\r?\n\s*/g, ' ').trim();
+}
+
 // 写单个记忆文件并重建索引。
 function writeMemoryFile(entry: MemoryEntry): string {
   fs.mkdirSync(MEMORY_DIR, { recursive: true });
@@ -185,7 +206,8 @@ function writeMemoryFile(entry: MemoryEntry): string {
   const filePath = memoryFilePath(filename);
   if (!filePath) throw new Error(`非法的记忆文件名: ${filename}`);
   const content =
-    `---\nname: ${entry.name}\ndescription: ${entry.description}\ntype: ${entry.type}\n---\n\n${entry.body}\n`;
+    `---\nname: ${singleLine(entry.name)}\ndescription: ${singleLine(entry.description)}` +
+    `\ntype: ${entry.type}\n---\n\n${entry.body}\n`;
   fs.writeFileSync(filePath, content, 'utf8');
   rebuildIndex();
   return filename;
@@ -358,16 +380,30 @@ function mockConsolidator(): LLMResponse {
 // 记忆文件数达到此值即触发合并。
 const CONSOLIDATE_THRESHOLD = 10;
 
+// 合并时喂给模型的记忆目录上限（字符）。超出就不再合并：模型看不到全部记忆，
+// 却要按它的输出删旧文件，没露面的那些会被误删。
+const CATALOG_LIMIT = 16_000;
+
 const s09Handlers = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const { messages, systemPrompt } = effect.input;
     const round = messages.filter((m) => m.role === 'assistant').length;
     console.log(`\n[Chat] → 轮次 ${round + 1}`);
     await new Promise((r) => setTimeout(r, 50));
-    const response = await callChat(mockLLM, messages, {
-      tools: schemasFor('bash', 'read_memory', 'write_memory', 'select_memory'),
-      system: systemPrompt,
-    });
+    let response: LLMResponse;
+    try {
+      response = await callChat(mockLLM, messages, {
+        tools: schemasFor('bash', 'read_memory', 'write_memory', 'select_memory'),
+        system: systemPrompt,
+      });
+    } catch (err) {
+      // 本章不做恢复：重试 / 备用模型 / 应急压缩是 s11 的内容。
+      console.error(
+        `\n[Chat] 模型调用失败（${classifyError(err)}）：${err instanceof Error ? err.message : String(err)}`,
+      );
+      console.error('[Chat] 恢复策略见 s11，本次运行到此结束。');
+      process.exit(1);
+    }
     const tools = getToolUseBlocks(response).map((b) => b.name).join(', ');
     console.log(`[LLM]  ← ${response.stop_reason}${tools ? ', 工具: ' + tools : ''}`);
     return response;
@@ -408,7 +444,7 @@ const s09Handlers = {
     return `记忆已保存: ${filename}`;
   },
 
-  // s09 核心：真实 LLM 调用挑选相关记忆；解析失败/无结果时关键词回退。
+  // s09 核心：真实 LLM 调用挑选相关记忆；挑不出来就不注入，不做别的猜测。
   SelectMemory: async (effect: SelectMemoryEffect): Promise<string[]> => {
     const { context, maxItems = 5 } = effect.input;
     const files = listMemoryFiles();
@@ -426,40 +462,32 @@ const s09Handlers = {
       `Recent conversation:\n${recent}\n\n` +
       `Memory catalog:\n${catalog}`;
 
+    let response: LLMResponse;
     try {
-      const response = await callChat(mockSelector, [{ role: 'user', content: prompt }], {
+      response = await callChat(mockSelector, [{ role: 'user', content: prompt }], {
         maxTokens: 200,
       });
-      const indices = extractJsonArray(extractText(response).trim(), false);
-      if (indices) {
-        const selected: string[] = [];
-        for (const idx of indices) {
-          if (typeof idx === 'number' && Number.isInteger(idx) && idx >= 0 && idx < files.length) {
-            selected.push(files[idx].filename);
-            if (selected.length >= maxItems) break;
-          }
-        }
-        console.log(`[SelectMemory] LLM 选中 ${selected.length} 个相关记忆`);
-        return selected;
-      }
-    } catch {
-      // 落到关键词回退
+    } catch (err) {
+      console.log(
+        `[SelectMemory] 模型调用失败，本轮不注入记忆：${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
     }
 
-    // 回退：对 name + description 做关键词匹配。
-    const keywords = recent
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 3);
+    const indices = extractJsonArray(extractText(response).trim(), false);
+    if (!indices) {
+      console.log('[SelectMemory] 模型未返回可解析的下标，本轮不注入记忆');
+      return [];
+    }
+
     const selected: string[] = [];
-    for (const f of files) {
-      const hay = `${f.name} ${f.description}`.toLowerCase();
-      if (keywords.some((kw) => hay.includes(kw))) {
-        selected.push(f.filename);
+    for (const idx of indices) {
+      if (typeof idx === 'number' && Number.isInteger(idx) && idx >= 0 && idx < files.length) {
+        selected.push(files[idx].filename);
         if (selected.length >= maxItems) break;
       }
     }
-    console.log(`[SelectMemory] 关键词回退选中 ${selected.length} 个相关记忆`);
+    console.log(`[SelectMemory] LLM 选中 ${selected.length} 个相关记忆`);
     return selected;
   },
 
@@ -490,7 +518,11 @@ const s09Handlers = {
         maxTokens: 800,
       });
       const items = extractJsonArray(extractText(response).trim(), true);
-      if (!items || items.length === 0) return 0;
+      if (!items) {
+        console.log('\n[Memory: 抽取返回的文本里没有可解析的记忆数组，本轮跳过]');
+        return 0;
+      }
+      if (items.length === 0) return 0; // 模型判断没有新东西可记 —— 正常结果
 
       let count = 0;
       for (const raw of items) {
@@ -502,7 +534,10 @@ const s09Handlers = {
       }
       if (count) console.log(`\n[Memory: extracted ${count} new memories]`);
       return count;
-    } catch {
+    } catch (err) {
+      console.log(
+        `\n[Memory: 抽取失败，本轮跳过：${err instanceof Error ? err.message : String(err)}`,
+      );
       return 0;
     }
   },
@@ -516,6 +551,12 @@ const s09Handlers = {
     const catalog = files
       .map((f) => `## ${f.filename}\nname: ${f.name}\ndescription: ${f.description}\n${f.body}`)
       .join('\n\n');
+    if (catalog.length > CATALOG_LIMIT) {
+      console.log(
+        `\n[Memory: 记忆目录 ${catalog.length} 字符超出 ${CATALOG_LIMIT}，本轮跳过合并]`,
+      );
+      return null;
+    }
 
     const prompt =
       'Consolidate the following memory files. Rules:\n' +
@@ -524,31 +565,45 @@ const s09Handlers = {
       '3. Keep the total under 30 memories\n' +
       '4. Preserve important user preferences above all\n' +
       'Return a JSON array. Each item: {name, type, description, body}.\n\n' +
-      `${catalog.slice(0, 16000)}`;
+      catalog;
 
     try {
       const response = await callChat(mockConsolidator, [{ role: 'user', content: prompt }], {
         maxTokens: 3000,
       });
       const items = extractJsonArray(extractText(response).trim(), true);
-      if (!items) return null;
 
-      // 删除旧记忆文件（保留索引，随后由写入重建）。
-      for (const filename of sortedMemoryFileNames()) {
-        fs.unlinkSync(path.join(MEMORY_DIR, filename));
-      }
-
-      let written = 0;
-      for (const raw of items) {
+      const entries: MemoryEntry[] = [];
+      for (const raw of items ?? []) {
         const entry = coerceEntry(raw, `memory-${Date.now()}`);
-        if (entry) {
-          writeMemoryFile(entry);
-          written += 1;
-        }
+        if (entry) entries.push(entry);
       }
-      console.log(`\n[Memory: consolidated ${files.length} → ${written} memories]`);
-      return { from: files.length, to: written };
-    } catch {
+      // 模型一条可用记忆都没给出时保留旧文件：宁可不去重，也不能把记忆清空。
+      if (entries.length === 0) {
+        console.log(`\n[Memory: 合并未产出可用条目，保留原有 ${files.length} 条]`);
+        return null;
+      }
+
+      // 先写新文件，再删没被新文件取代的旧文件：中途出错也只会多出文件，不会只剩空目录。
+      const written = new Set<string>();
+      for (const entry of entries) written.add(writeMemoryFile(entry).toLowerCase());
+
+      let removed = 0;
+      for (const filename of sortedMemoryFileNames()) {
+        // 大小写不敏感地比对：macOS / Windows 上新旧文件名只差大小写时是同一个文件。
+        if (written.has(filename.toLowerCase())) continue;
+        fs.unlinkSync(path.join(MEMORY_DIR, filename));
+        removed += 1;
+      }
+      // 删除后索引里还留着已删文件的条目，这里再重建一次。
+      if (removed) rebuildIndex();
+
+      console.log(`\n[Memory: consolidated ${files.length} → ${written.size} memories]`);
+      return { from: files.length, to: written.size };
+    } catch (err) {
+      console.log(
+        `\n[Memory: 合并失败，保留原有 ${files.length} 条：${err instanceof Error ? err.message : String(err)}`,
+      );
       return null;
     }
   },

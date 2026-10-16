@@ -54,7 +54,7 @@ interface WriteMemoryEffect extends Effect<
   string
 > {}
 
-// 选择相关记忆（基于当前上下文，真实 LLM 调用 + 关键词回退）
+// 选择相关记忆（基于当前上下文，真实 LLM 调用）
 interface SelectMemoryEffect extends Effect<
   'SelectMemory',
   { context: string; maxItems?: number },
@@ -87,7 +87,7 @@ interface ConsolidateMemoriesEffect extends Effect<
 |--------|-------------------|
 | `write_memory_file(name, type, desc, body)` | `WriteMemory` Effect → Handler 写文件 + 重建索引 |
 | `read_memory_index()` | `ReadMemory` Effect（无 filename 参数） |
-| `select_relevant_memories(messages, max=5)` | `SelectMemory` Effect → 真实 LLM 选择，关键词回退 |
+| `select_relevant_memories(messages, max=5)` | `SelectMemory` Effect → 真实 LLM 选择，挑不出来就不注入 |
 | `extract_memories(messages)` | `ExtractMemories` Effect → 真实 LLM 抽取 → 写入磁盘 |
 | `consolidate_memories()` | `ConsolidateMemories` Effect → 数量 ≥ 10 时真实 LLM 合并 |
 | 四种类型: user/feedback/project/reference | `MemoryType` 联合类型 |
@@ -123,7 +123,7 @@ type: feedback
 mock 模式只是把「模型」换成结果稳定的 `mockSelector` / `mockExtractor` / `mockConsolidator`，
 调用路径、文件读写、索引重建全部是真的。
 
-#### 1. SelectMemory — 选择相关记忆（带关键词回退）
+#### 1. SelectMemory — 选择相关记忆
 
 ```typescript
 // 1) 把每条记忆的 name + description 编成目录
@@ -133,7 +133,7 @@ const catalog = files.map((f, i) => `${i}: ${f.name} — ${f.description}`).join
 const response = await callChat(mockSelector, [{ role: 'user', content: prompt }], { maxTokens: 200 });
 const indices = extractJsonArray(extractText(response).trim(), false); // [0, 3]
 
-// 3) 解析失败或模型不可用时，回退到 name+description 的关键词匹配
+// 3) 模型不可用或返回的下标解析不出来时，本轮不注入记忆（只打日志，不猜）
 ```
 
 #### 2. ExtractMemories — 每轮结束后抽取新记忆
@@ -149,7 +149,7 @@ const response = await callChat(mockExtractor, [{ role: 'user', content: prompt 
 ```typescript
 const CONSOLIDATE_THRESHOLD = 10;
 if (files.length < CONSOLIDATE_THRESHOLD) return null;
-// 模型返回合并后的 JSON 数组 → 删除旧文件 → 逐条重写
+// 模型返回合并后的 JSON 数组 → 校验出可用条目 → 先写新文件，再删没被取代的旧文件
 ```
 
 ### 会话启动流程
@@ -186,7 +186,7 @@ function* agentLoop(perform: PerformFn<S09Effect>) {
 ReadMemory (索引) → 注入 system prompt
     │
     ▼
-SelectMemory（真实 LLM 调用，关键词回退）
+SelectMemory（真实 LLM 调用）
     │  选出相关文件名 → 读取正文 → 注入当前用户轮次
     ▼
 ┌─────────────────────────────────────────────┐

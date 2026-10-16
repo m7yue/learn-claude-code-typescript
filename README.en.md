@@ -123,7 +123,7 @@ README.en.md
 | Chapter | Theme | Added mechanism |
 | --- | --- | --- |
 | [s08](s08_context_compact/) | Context Compact | `Compact`, `PersistOutput` |
-| [s09](s09_memory/) | Memory | `ReadMemory`, `WriteMemory`, `SelectMemory` |
+| [s09](s09_memory/) | Memory | `ReadMemory`, `WriteMemory`, `SelectMemory`, `ExtractMemories`, `ConsolidateMemories` |
 
 ### Concurrency & Scheduling
 

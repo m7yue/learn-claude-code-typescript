@@ -123,7 +123,7 @@ README.md
 | 章节 | 主题 | 新增机制 |
 | --- | --- | --- |
 | [s08](s08_context_compact/) | Context Compact | `Compact`, `PersistOutput` |
-| [s09](s09_memory/) | Memory | `ReadMemory`, `WriteMemory`, `SelectMemory` |
+| [s09](s09_memory/) | Memory | `ReadMemory`, `WriteMemory`, `SelectMemory`, `ExtractMemories`, `ConsolidateMemories` |
 
 ### Concurrency & Scheduling（并发与调度）
 

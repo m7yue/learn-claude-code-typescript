@@ -133,6 +133,12 @@ const expectations: Record<string, Check[]> = {
     { what: "记忆合并", match: /ConsolidateMemories/ },
     { what: "记忆文件落在工作区 .memory/", match: /MEMORY_DIR/ },
     { what: "写记忆文件前先解析路径并挡越界（不只靠 slugify）", match: /memoryFilePath\(filename\)/ },
+    {
+      what: "索引文件按大小写不敏感排除（大小写不敏感的文件系统上 memory.md 就是 MEMORY.md）",
+      match: /toLowerCase\(\) === 'memory\.md'/,
+    },
+    { what: "slug 兜底名不与索引同名", match: /slug !== 'memory'/ },
+    { what: "合并未产出可用条目时保留旧记忆，不清空", match: /entries\.length === 0/ },
   ],
   "s11_error_recovery": [
     { what: "按 name/message 字符串分类错误", match: /classifyError/ },
