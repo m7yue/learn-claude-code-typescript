@@ -60,6 +60,11 @@ const demoArtifacts: Record<string, string[]> = {
 /** 各章 demo 必须在 stdout 里留下的机制痕迹：能跑通（完成标记）不等于演示了本章声称的机制。 */
 const requiredStdout: Record<string, string[]> = {
   s08_context_compact: ["[L1 Snip]", "[L2 Micro]", "[L3 Persist]", "[auto compact]"],
+  s10_system_prompt: [
+    "[AssemblePrompt] 重新组装: [identity, tools, workspace]",
+    "[AssemblePrompt] 重新组装: [identity, tools, workspace, task]",
+    "[AssemblePrompt] ✓ 缓存命中",
+  ],
 };
 
 for (const [dir, marker] of chapters) {

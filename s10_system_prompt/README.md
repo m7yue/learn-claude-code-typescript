@@ -82,7 +82,7 @@ AssemblePrompt: async (effect) => {
 
 ```typescript
 const PROMPT_SECTIONS = {
-  identity: `你是一个编码助手。直接行动，不要过多解释。运行环境：${ENVIRONMENT_PROMPT}。`,
+  identity: `你是一个编码助手。直接行动，不要过多解释。本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。`,
   tools: (tools: string[]) => `可用工具：${tools.join('、')}`,
   workspace: (ws: string) => `工作目录：${ws}`,
   memory: (mem: string) => `记忆：\n${mem}`,
@@ -101,10 +101,12 @@ function* agentLoop(perform: PerformFn<S10Effect>) {
     const systemPrompt = yield* perform({ type: 'AssemblePrompt', input: { context } });
 
     const response = yield* perform({ type: 'Chat', input: { messages, systemPrompt } });
-    // ...
+    // ...处理工具调用，把结果写回 messages...
 
-    // 下一轮可能更新 context（如获得了记忆、启动了新任务）
-    context = { ...context, activeTask: '...' };
+    // 第一轮工具结果回来后，宿主更新 context，把当前任务记进去
+    if (!context.activeTask) {
+      context = { ...context, activeTask: USER_REQUEST };
+    }
   }
 }
 ```
@@ -118,33 +120,40 @@ function* agentLoop(perform: PerformFn<S10Effect>) {
     │
     AssemblePrompt → 缓存 miss → 组装 [identity, tools, workspace]
     │
-    LLM 调用...
+    LLM 调用 → bash ls
     │
-轮次 2：context 不变（相同任务）
+轮次 2：第一轮工具结果回来后，宿主把当前任务写进 context（activeTask）
+    │
+    AssemblePrompt → 缓存 miss（上下文变了）→ 组装 [identity, tools, workspace, task]
+    │
+    LLM 调用 → bash pwd
+    │
+轮次 3：context 不变
     │
     AssemblePrompt → 缓存 HIT → 直接返回上次结果
     │
     节省字符串拼接开销；保持 system prompt 稳定本身也有价值——
     将来接服务端 prompt cache 时，前缀不变才可能命中（本章只做本地缓存）
-    │
-轮次 3：context 若变化（例如填入 memories / activeTask）
-    │
-    AssemblePrompt → 缓存 miss → 组装 [identity, tools, workspace, memory, task]
-    │
-    （本章演示里 context 始终只有 tools 与 workspace，这一步不会发生；
-      memory / task 片段是备好的能力，见 assemblePrompt 里的条件包含）
 ```
+
+记忆片段同理：context 里填了 memories，组装结果才会多出「记忆」片段。演示里走的是任务片段——记忆需要有来源，那是 s09 的内容。
 
 ---
 
 ## 运行
 
 ```bash
+# 默认离线 mock；本地 .env 若写了 AGENT_MODE=real，用 --mock 强制离线
 npm run s10
+
+# 真实模型（需要 .env 里的 token 与 MODEL_ID）
+npm run s10 -- --real
 ```
+
+mock 模式只替换「模型」本身，命令回显与组装流程都是真的。real 模式下模型真调用：它执行命令、把回显转述回来，但组装几次、命中几次由它自己的轮数决定——比如它第一轮就把两条命令并行跑完、第二轮直接作答（一次实测：组装 2 次、命中 0 次），它若多跑几轮，后面的组装就会命中缓存。bash 在本章是模拟的，模型不会去读仓库里的文件。
 
 ---
 
 ## 本章小结
 
-**AssemblePrompt Effect 让 system prompt 从静态字符串变为运行时计算的结果，根据当前上下文动态包含或排除片段。缓存确保相同上下文不重复计算，也稳定了 Anthropic API 的 prompt cache。**
+**AssemblePrompt Effect 让 system prompt 从静态字符串变为运行时计算的结果，根据当前上下文动态包含或排除片段。本地缓存确保相同上下文不重复计算，也让拼出来的 prompt 保持稳定——将来接服务端 prompt cache 时，前缀不变才可能命中（本章只做本地缓存）。**

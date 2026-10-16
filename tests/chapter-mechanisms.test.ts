@@ -140,6 +140,15 @@ const expectations: Record<string, Check[]> = {
     { what: "slug 兜底名不与索引同名", match: /slug !== 'memory'/ },
     { what: "合并未产出可用条目时保留旧记忆，不清空", match: /entries\.length === 0/ },
   ],
+  "s10_system_prompt": [
+    { what: "上下文变化后真的重新组装（当前任务写回 context）", match: /context = \{ \.\.\.context, activeTask/ },
+    {
+      what: "主循环按模型是否还要调用工具结束，不设轮次上限",
+      match: /while \(true\)[\s\S]{0,500}?stop_reason !== 'tool_use'/,
+    },
+    { what: "不再把与模拟说明矛盾的环境句拼进提示词", absent: /ENVIRONMENT_PROMPT/ },
+    { what: "请求改成模拟 bash 下能完成的事（不再要求真的列出目录）", absent: /帮我列出当前目录/ },
+  ],
   "s11_error_recovery": [
     { what: "按 name/message 字符串分类错误", match: /classifyError/ },
     { what: "model/maxTokens 透传进 callChat", match: /maxTokens/ },

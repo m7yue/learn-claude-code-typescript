@@ -16,7 +16,6 @@ import type { Message, LLMResponse, ToolResultBlock } from '../runtime/types.ts'
 import { extractText, getToolUseBlocks } from '../runtime/response.ts';
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
-import { ENVIRONMENT_PROMPT } from '../runtime/system-prompt.ts';
 import { WORKSPACE_ROOT } from '../runtime/workspace.ts';
 
 // ============================================================
@@ -46,7 +45,7 @@ type S10Effect = ChatEffect | BashExecEffect | AssemblePromptEffect;
 // 提示词片段库：每个片段要么是「静态字符串」，要么是「按上下文生成文本的函数」。
 // 这里用宽松的联合类型存储，assemblePrompt 再按各自的调用形态取值。
 const PROMPT_SECTIONS: Record<string, string | ((...args: string[]) => string)> = {
-  identity: `你是一个编码助手。直接行动，不要过多解释。运行环境：${ENVIRONMENT_PROMPT}。本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。`,
+  identity: `你是一个编码助手。直接行动，不要过多解释。本教学演示中 bash 是模拟的：只回显命令文本、不会真正执行，请不要依赖它的输出。`,
   tools: (tools: string[]) => `可用工具：${tools.join('、')}`,
   workspace: (ws: string) => `工作目录：${ws}`,
   memory: (mem: string) => `记忆：\n${mem}`,
@@ -87,7 +86,7 @@ function mockLLM(messages: Message[]): LLMResponse {
     };
   }
   if (round === 1) {
-    // 第2轮相同上下文，应该命中缓存
+    // 第2轮上下文多了 task 片段，会重新组装（miss）
     return {
       stop_reason: 'tool_use',
       content: [
@@ -98,7 +97,7 @@ function mockLLM(messages: Message[]): LLMResponse {
   }
   return {
     stop_reason: 'end_turn',
-    content: [{ type: 'text', text: '任务完成，提示词缓存命中2次。' }],
+    content: [{ type: 'text', text: '任务完成：提示词组装 2 次，缓存命中 1 次。' }],
   };
 }
 
@@ -144,9 +143,11 @@ const s10Handlers = {
 // Part 3: Agent Generator
 // ============================================================
 
+const USER_REQUEST = '请用 bash 工具依次执行 ls 和 pwd，把两次的回显原样转述给我。';
+
 function* agentLoop(perform: PerformFn<S10Effect>) {
   const messages: Message[] = [
-    { role: 'user', content: '帮我列出当前目录，然后输出工作路径。' },
+    { role: 'user', content: USER_REQUEST },
   ];
 
   // 初始上下文
@@ -194,9 +195,10 @@ function* agentLoop(perform: PerformFn<S10Effect>) {
       content: toolResults,
     });
 
-    // 下一轮：更新上下文（如果有变化，下次 AssemblePrompt 会重新生成）
-    // 例如：完成某个任务后，activeTask 可能变化
-    context = { ...context };
+    // 第一轮工具结果回来后更新 context：下一轮会因上下文变化重新组装，task 片段随之出现
+    if (!context.activeTask) {
+      context = { ...context, activeTask: USER_REQUEST };
+    }
   }
 }
 
