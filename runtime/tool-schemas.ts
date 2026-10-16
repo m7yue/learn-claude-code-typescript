@@ -67,14 +67,14 @@ export const TOOL_SPECS: Record<string, ToolSchema> = {
   glob: schema("glob", "按 glob 模式查找文件。", { pattern: str("glob 模式") }, ["pattern"]),
   todo_write: schema(
     "todo_write",
-    "写入/更新待办列表（覆盖式）。",
+    "写入/更新待办列表（覆盖式）。每个任务要用两种说法：content 是祈使句（要做什么），activeForm 是进行时（正在做什么）。",
     {
       todos: arr("待办项列表", {
         type: "object",
         properties: {
-          content: { type: "string" },
+          content: str("任务内容，祈使句形式，如「读取配置文件」"),
           status: { type: "string", enum: ["pending", "in_progress", "completed"] },
-          activeForm: { type: "string" },
+          activeForm: str("任务的进行时形式，如「读取配置文件中」；任务进行中时展示给用户"),
         },
         required: ["content", "status", "activeForm"],
       }),

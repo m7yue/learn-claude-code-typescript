@@ -159,7 +159,7 @@ npm run s05
 [Chat] → 发送 1 条消息...
 [LLM]  ← stop_reason: tool_use, 工具: todo_write
 [TodoWrite] 更新任务列表:
-  ◑ [in_progress] 列出目录结构
+  ◑ [in_progress] 列出目录结构（列出目录结构中）
   ○ [pending] 读取配置文件
   ○ [pending] 生成报告
 ...

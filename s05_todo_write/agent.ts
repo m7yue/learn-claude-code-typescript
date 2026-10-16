@@ -47,7 +47,13 @@ let currentTodos: TodoItem[] = [];
 function formatTodos(todos: TodoItem[]): string {
   if (todos.length === 0) return '（无任务）';
   const icons = { pending: '○', in_progress: '◑', completed: '●' };
-  return todos.map(t => `  ${icons[t.status]} [${t.status}] ${t.content}`).join('\n');
+  return todos
+    .map(t => {
+      // 进行中的项额外显示 activeForm（进行时描述），对应真实 Claude Code 的进度提示
+      const suffix = t.status === 'in_progress' ? `（${t.activeForm}）` : '';
+      return `  ${icons[t.status]} [${t.status}] ${t.content}${suffix}`;
+    })
+    .join('\n');
 }
 
 // Mock LLM：第1轮先写计划，第2-4轮执行任务，第5轮完成
