@@ -35,6 +35,7 @@ import { loadEnvOnce, resolveMode } from '../runtime/env.ts';
 // 扩展 ChatEffect，携带本次请求的模型与 token 上限（透传给 callChat）
 interface ChatEffect extends Effect<'Chat', { messages: Message[]; model?: string; maxTokens?: number }, LLMResponse> {}
 
+// 执行 bash 命令（本章是模拟的：handler 只回显命令文本）
 interface BashExecEffect extends Effect<'BashExec', { command: string }, string> {}
 
 // s11 新增：带退避的重试（等待时长由 handler 决定）
@@ -51,20 +52,31 @@ type S11Effect = ChatEffect | BashExecEffect | RetryWithBackoffEffect | SwitchMo
 
 loadEnvOnce();
 
+/** MODEL_ID 缺失时（离线 mock）使用的模型名。 */
 const DEFAULT_MODEL = 'claude-opus-4-5';
+/** mock 模式的演示备用模型：让「连续 529 → SwitchModel」这条路径离线也能走到。 */
 const MOCK_FALLBACK_MODEL = 'claude-haiku-4-5';
 
+/** 首次请求的输出上限。 */
 const DEFAULT_MAX_TOKENS = 8000;
+/** 遇到 max_tokens 截断后升级到的输出上限。 */
 const ESCALATED_MAX_TOKENS = 64000;
+/** max_tokens 截断后最多续接几次；用满即结束本轮。 */
 const MAX_RECOVERY_RETRIES = 3;
+/** 同一次模型调用最多尝试几次（含首次）；429/529 的重试也受它限制。 */
 const MAX_RETRIES = 10;
+/** 连续这么多次 529 过载就切换备用模型；未配置 FALLBACK_MODEL_ID 时只打印日志、继续重试。 */
 const MAX_CONSECUTIVE_529 = 3;
+/** 退避起点时长。 */
 const BASE_DELAY_MS = 500;
+/** 退避时长上限：按 2 的幂增长到它就不再涨。 */
 const MAX_BACKOFF_MS = 32000;
 
+/** 截断续接提示：贴回被截断的输出后发给模型，要求直接接着写、不要道歉或复述。 */
 const CONTINUATION_PROMPT =
   'Output token limit hit. Resume directly — no apology, no recap. Pick up mid-thought.';
 
+/** 应急压缩后插入的合成 user 消息：告诉模型上文已被裁掉，从当前进度继续。 */
 const REACTIVE_COMPACT_PROMPT =
   '[Reactive compact] Earlier conversation trimmed. Continue from where you left off.';
 
@@ -84,12 +96,17 @@ const FALLBACK_MODEL = configuredFallbackModel();
 // mock 模式下把退避时长压缩一个量级，让整轮演示 <3s；真实公式与上限不变。
 const MOCK_DELAY_SCALE = 0.01;
 
-/** 跨轮次保存的恢复状态。 */
+/** 跨轮次保存的恢复状态：三条恢复路径各自的进度都存在这里。 */
 class RecoveryState {
+  /** 是否已升级过 token 上限（每次运行只升级一次，之后不再复位）。 */
   hasEscalated = false;
+  /** max_tokens 已续接的次数，与 MAX_RECOVERY_RETRIES 比较。 */
   recoveryCount = 0;
+  /** 连续 529 过载的次数；请求成功一次就清零。 */
   consecutive529 = 0;
+  /** 是否已应急压缩过（Path 2 只压缩一次）。 */
   hasAttemptedReactiveCompact = false;
+  /** 当前使用的模型；连续 529 触发 SwitchModel 后换成备用模型。 */
   currentModel = PRIMARY_MODEL;
 }
 
@@ -140,6 +157,7 @@ function errorText(error: unknown): string {
 // mock 只负责「按调用序号」抛出真实形状的错误或返回真实形状的响应。
 // ============================================================
 
+/** mock 的调用序号：第几次调用决定抛什么错、返回什么响应。 */
 let callCount = 0;
 
 function mockLLM(_messages: Message[]): LLMResponse {
@@ -241,6 +259,7 @@ function* agentLoop(perform: PerformFn<S11Effect>) {
   ];
 
   const state = new RecoveryState();
+  // 本次请求发出的输出上限：被截断时升级，之后的请求都带着升级后的值。
   let maxTokens = DEFAULT_MAX_TOKENS;
 
   while (true) {
@@ -389,9 +408,13 @@ function* agentLoop(perform: PerformFn<S11Effect>) {
 // ============================================================
 
 console.log('[S11] Error Recovery 启动\n');
-console.log(
-  '（mock 脚本：1=429 退避，2-4=连续 529 触发切换模型，5=max_tokens 升级，6=prompt_too_long 压缩，7=工具调用，8=完成）\n',
-);
+
+// real 模式由真实模型驱动，1..8 的脚本化调用序列不适用。
+if (resolveMode() !== 'real') {
+  console.log(
+    '（mock 脚本：1=429 退避，2-4=连续 529 触发切换模型，5=max_tokens 升级，6=prompt_too_long 压缩，7=工具调用，8=完成）\n',
+  );
+}
 
 const result = await runAgent<S11Effect, string>(agentLoop, s11Handlers);
 
