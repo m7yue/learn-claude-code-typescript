@@ -160,7 +160,7 @@ lead 通过 `spawn_teammate` 拉起一个**独立 generator**（`autonomousWorke
 - 结束时把最终摘要作为 `result` 消息**写回 lead 的信箱**（`SendMessage` → `.mailboxes/main.jsonl`）。
 - lead 的 `check_inbox` 会先 `await` 所有队友子循环再读信箱，保证"报告已送达"后能稳定结束。
 
-信箱是真实 JSONL 文件（`.mailboxes/*.jsonl`），读写走 `runtime/locks.ts` 的 `Mutex`。
+信箱是真实 JSONL 文件（`.mailboxes/*.jsonl`）。
 
 ### 演示剧本（结果可重复）
 

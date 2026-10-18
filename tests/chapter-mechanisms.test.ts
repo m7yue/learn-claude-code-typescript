@@ -30,12 +30,17 @@ async function chapterSources(dir: string): Promise<string[]> {
   return Promise.all(files.map((f) => readFile(join(root, dir, f), "utf8")));
 }
 
+/** 去掉注释；absent 守卫只看代码，解释性注释不应触发失败。 */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
 interface Check {
   /** 该机制的人类可读描述，失败时用于报错。 */
   what: string;
   /** 关键代码痕迹（正则，对源码全文）。 */
   match?: RegExp;
-  /** 改法回退的标志（正则，命中即失败）；用于守住"旧写法不许回来"。 */
+  /** 改法回退的标志（正则，对去掉注释后的源码；命中即失败）。 */
   absent?: RegExp;
 }
 
@@ -168,14 +173,19 @@ const expectations: Record<string, Check[]> = {
   ],
   "s13_background_tasks": [
     { what: "bg_%04d 命名", match: /padStart\(4,\s*['"]0['"]\)/ },
-    { what: "后台任务注册表 + 锁", match: /Mutex/ },
+    { what: "后台任务注册表", match: /class BackgroundRegistry/ },
+    { what: "注册表用 backgroundResults 保存结果", match: /backgroundResults/ },
+    { what: "s13 不再使用进程内 Mutex", absent: /\bMutex\b/ },
     { what: "任务通知 <task_notification>", match: /task_notification/ },
     { what: "run_in_background 触发后台", match: /run_in_background/ },
     { what: "路径基准取 WORKSPACE_ROOT（不从提示词借 process.cwd）", match: /path\.relative\(WORKSPACE_ROOT, resolved\)/ },
   ],
   "s14_cron_scheduler": [
     { what: "真实调度循环 setInterval", match: /setInterval/ },
-    { what: "调度/处理器锁", match: /Mutex/ },
+    { what: "队列处理器用 agentLock.tryAcquire 拿锁", match: /agentLock\.tryAcquire\(\)/ },
+    { what: "队列处理器在 finally 中释放 agentLock", match: /agentLock\.tryAcquire\(\)[\s\S]{0,400}?finally\s*\{\s*release\(\);\s*\}/ },
+    { what: "主流程用 agentLock.withLock 包住 runAgentTurn", match: /agentLock\.withLock\(\(\) => runAgentTurn\(\)\)/ },
+    { what: "s14 不再使用 cronLock", absent: /\bcronLock\b/ },
     { what: "minute 去重标记", match: /lastFired|_last_fired/i },
     { what: "cron 字段解析支持区间/列表", match: /cronFieldMatches/ },
     { what: "list_crons 工具", match: /list_crons/ },
@@ -262,7 +272,7 @@ for (const [dir, checks] of Object.entries(expectations)) {
       .filter((check) => {
         const { match, absent } = check;
         const hit = match ? sources.some((s) => match.test(s)) : true;
-        const bad = absent ? sources.some((s) => absent.test(s)) : false;
+        const bad = absent ? sources.some((s) => absent.test(stripComments(s))) : false;
         return !hit || bad;
       })
       .map((c) => c.what);
@@ -274,7 +284,7 @@ test("章节不再以 process.cwd() 作为工作区基准（注释里的说明�
   const offenders: string[] = [];
   for (const dir of chapters) {
     for (const raw of await chapterSources(dir)) {
-      const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+      const code = stripComments(raw);
       if (/process\.cwd\(\)/.test(code)) {
         offenders.push(dir);
         break;

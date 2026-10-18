@@ -26,7 +26,6 @@ import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import { MAILBOXES_DIR, WORKSPACE_ROOT } from '../runtime/workspace.ts';
-import { Mutex } from '../runtime/locks.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -97,12 +96,8 @@ function validateAgentId(agentId: string): void {
  * 文件消息总线：每个 Agent 一个 `.jsonl` 信箱，一行一条 JSON 消息。
  *   send()       —— 追加一行（真实写文件）
  *   readInbox()  —— 读出全部消息，然后把文件清空（读完即取走）
- *
- * 多个队友会同时读写，因此用 runtime/locks.ts 的 Mutex 加锁：同一时刻只允许一个
- * 操作在追加或读出清空，避免两次写叠在一起把文件写坏。
  */
 class MessageBus {
-  private readonly mutex = new Mutex();
   private seq = 0;
 
   constructor() {
@@ -115,32 +110,28 @@ class MessageBus {
   }
 
   async send(from: string, to: string, body: string, type = 'message'): Promise<string> {
-    return this.mutex.withLock(() => {
-      fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
-      const msg: AgentMessage = { from, to, body, type, timestamp: Date.now() };
-      fs.appendFileSync(this.inboxPath(to), JSON.stringify(msg) + '\n', 'utf8');
-      const messageId = `msg_${Date.now()}_${++this.seq}`;
-      console.log(`  \x1b[33m[bus] ${from} → ${to}: ${truncate(body, 50)}\x1b[0m`);
-      // 唤醒正在空闲等待的收件队友（没有在等的就忽略；队友那边还会自己轮询）
-      signalMailbox(to);
-      return messageId;
-    });
+    fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
+    const msg: AgentMessage = { from, to, body, type, timestamp: Date.now() };
+    fs.appendFileSync(this.inboxPath(to), JSON.stringify(msg) + '\n', 'utf8');
+    const messageId = `msg_${Date.now()}_${++this.seq}`;
+    console.log(`  \x1b[33m[bus] ${from} → ${to}: ${truncate(body, 50)}\x1b[0m`);
+    // 唤醒正在空闲等待的收件队友（没有在等的就忽略；队友那边还会自己轮询）
+    signalMailbox(to);
+    return messageId;
   }
 
   async readInbox(agentId: string): Promise<AgentMessage[]> {
-    return this.mutex.withLock(() => {
-      const p = this.inboxPath(agentId);
-      if (!fs.existsSync(p)) return [];
-      const msgs = fs
-        .readFileSync(p, 'utf8')
-        .split('\n')
-        .filter((line) => line.trim())
-        .map((line) => JSON.parse(line) as AgentMessage);
-      // 消费式读取：读出全部消息后把文件清空为 0 字节，
-      // 便于学习者在 .mailboxes/ 里看到信箱布局（目录/文件名都是真实的）。
-      fs.writeFileSync(p, '', 'utf8');
-      return msgs;
-    });
+    const p = this.inboxPath(agentId);
+    if (!fs.existsSync(p)) return [];
+    const msgs = fs
+      .readFileSync(p, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as AgentMessage);
+    // 消费式读取：读出全部消息后把文件清空为 0 字节，
+    // 便于学习者在 .mailboxes/ 里看到信箱布局（目录/文件名都是真实的）。
+    fs.writeFileSync(p, '', 'utf8');
+    return msgs;
   }
 }
 

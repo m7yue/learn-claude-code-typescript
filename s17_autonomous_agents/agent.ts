@@ -20,7 +20,7 @@
  *   ScanUnclaimed — 扫描可认领任务（pending + 无 owner + canStart）
  *   AutoClaim     — 主动认领第一个能做的任务（检查 owner 和依赖）
  *
- * 路径来自 runtime/workspace.ts（.tasks/、.mailboxes/），锁来自 runtime/locks.ts。
+ * 路径来自 runtime/workspace.ts（.tasks/、.mailboxes/）。
  */
 
 import { runAgent } from '../runtime/core.ts';
@@ -32,7 +32,6 @@ import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import { resolveMode } from '../runtime/env.ts';
 import { TASKS_DIR, MAILBOXES_DIR } from '../runtime/workspace.ts';
-import { Mutex } from '../runtime/locks.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -252,12 +251,8 @@ function validateAgentId(agentId: string): void {
  * 文件消息总线：每个 Agent 一个 `.jsonl` 信箱，一行一条 JSON 消息。
  *   send()       —— append 一行（真实追加写）
  *   readInbox()  —— 读出全部行并清空（消费式读取）
- *
- * 并发队友会同时读写，用 runtime/locks.ts 的 Mutex 串行化 append / read-clear，
- * 避免交错写坏 JSONL。
  */
 class MessageBus {
-  private readonly mutex = new Mutex();
   private seq = 0;
 
   constructor() {
@@ -270,29 +265,25 @@ class MessageBus {
   }
 
   async send(from: string, to: string, body: string, type = 'message'): Promise<string> {
-    return this.mutex.withLock(() => {
-      fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
-      const msg: AgentMessage = { from, to, body, type, timestamp: Date.now() };
-      fs.appendFileSync(this.inboxPath(to), JSON.stringify(msg) + '\n', 'utf8');
-      const messageId = `msg_${Date.now()}_${++this.seq}`;
-      console.log(`  \x1b[33m[bus] ${from} → ${to}: (${type}) ${truncate(body, 50)}\x1b[0m`);
-      return messageId;
-    });
+    fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
+    const msg: AgentMessage = { from, to, body, type, timestamp: Date.now() };
+    fs.appendFileSync(this.inboxPath(to), JSON.stringify(msg) + '\n', 'utf8');
+    const messageId = `msg_${Date.now()}_${++this.seq}`;
+    console.log(`  \x1b[33m[bus] ${from} → ${to}: (${type}) ${truncate(body, 50)}\x1b[0m`);
+    return messageId;
   }
 
   /** 消费式读取：读出全部消息后把文件清空为 0 字节。 */
   async readInbox(agentId: string): Promise<AgentMessage[]> {
-    return this.mutex.withLock(() => {
-      const p = this.inboxPath(agentId);
-      if (!fs.existsSync(p)) return [];
-      const msgs = fs
-        .readFileSync(p, 'utf8')
-        .split('\n')
-        .filter((line) => line.trim())
-        .map((line) => JSON.parse(line) as AgentMessage);
-      fs.writeFileSync(p, '', 'utf8');
-      return msgs;
-    });
+    const p = this.inboxPath(agentId);
+    if (!fs.existsSync(p)) return [];
+    const msgs = fs
+      .readFileSync(p, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as AgentMessage);
+    fs.writeFileSync(p, '', 'utf8');
+    return msgs;
   }
 }
 

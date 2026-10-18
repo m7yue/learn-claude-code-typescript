@@ -3,7 +3,7 @@
  *
  * 本章机制：
  *   - BackgroundRegistry：用两张表记录后台任务（backgroundTasks 记录进行中/已完成，
- *     backgroundResults 存结果），并用 Mutex 加锁，保证同一时刻只有一个操作在改表
+ *     backgroundResults 存结果）
  *   - startBackgroundTask：自增计数、按 bg_%04d 命名、先记为 running，然后启动一个
  *     「不等它结束」的 async 任务，立即把任务 id 返回给主循环
  *   - collectBackgroundResults：只挑出已经完成的任务，整理成 <task_notification> 文本
@@ -61,7 +61,6 @@ import { extractText, getToolUseBlocks, messageText } from '../runtime/response.
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
-import { Mutex } from '../runtime/locks.ts';
 import { TASKS_DIR, WORKSPACE_ROOT } from '../runtime/workspace.ts';
 
 // ============================================================
@@ -277,11 +276,9 @@ interface BackgroundTaskRecord {
  * 后台任务注册表 —— 用两张 Map 分别保存后台任务的记录与结果。
  *
  * startBackgroundTask 会启动一个「不等它结束」的 async 任务：调用方拿到 bg id 后
- * 主循环立刻继续，后台那段代码稍后才把结果写回。两张表都用 Mutex 加锁，保证同一时刻
- * 只有一个操作在读/写它们，不会互相打断。
+ * 主循环立刻继续，后台那段代码稍后才把结果写回。
  */
 class BackgroundRegistry {
-  private readonly lock = new Mutex(); // 加锁，保证同一时刻只有一个操作在读/写这两张表
   private counter = 0; // 自增计数，用于 bg_0001、bg_0002 这样的命名
   private readonly backgroundTasks = new Map<string, BackgroundTaskRecord>();
   private readonly backgroundResults = new Map<string, string>();
@@ -294,26 +291,22 @@ class BackgroundRegistry {
       typeof block.input['command'] === 'string' ? block.input['command'] : block.name;
 
     const startedAt = Date.now();
-    await this.lock.withLock(() => {
-      this.backgroundTasks.set(bgId, {
-        toolUseId: block.id,
-        command,
-        status: 'running',
-        startedAt,
-      });
+    this.backgroundTasks.set(bgId, {
+      toolUseId: block.id,
+      command,
+      status: 'running',
+      startedAt,
     });
 
     // 不等它：主循环拿到 bgId 后立刻继续，后台那段代码稍后自己把结果写回来。
     (async () => {
       const result = await executeTool(block);
-      await this.lock.withLock(() => {
-        const task = this.backgroundTasks.get(bgId);
-        if (task) {
-          task.status = 'completed';
-          task.finishedAt = Date.now();
-        }
-        this.backgroundResults.set(bgId, result);
-      });
+      const task = this.backgroundTasks.get(bgId);
+      if (task) {
+        task.status = 'completed';
+        task.finishedAt = Date.now();
+      }
+      this.backgroundResults.set(bgId, result);
     })().catch((err) => {
       console.log(`  [background error] ${bgId}: ${err instanceof Error ? err.message : String(err)}`);
     });
@@ -324,21 +317,16 @@ class BackgroundRegistry {
 
   /** 收集已完成任务，返回 <task_notification> 文本。 */
   async collectBackgroundResults(): Promise<string[]> {
-    const readyIds = await this.lock.withLock(() =>
-      [...this.backgroundTasks.entries()]
-        .filter(([, task]) => task.status === 'completed')
-        .map(([bgId]) => bgId),
-    );
+    const readyIds = [...this.backgroundTasks.entries()]
+      .filter(([, task]) => task.status === 'completed')
+      .map(([bgId]) => bgId);
 
     const notifications: string[] = [];
     for (const bgId of readyIds) {
-      const { task, output } = await this.lock.withLock(() => {
-        const task = this.backgroundTasks.get(bgId)!;
-        const output = this.backgroundResults.get(bgId) ?? '';
-        this.backgroundTasks.delete(bgId);
-        this.backgroundResults.delete(bgId);
-        return { task, output };
-      });
+      const task = this.backgroundTasks.get(bgId)!;
+      const output = this.backgroundResults.get(bgId) ?? '';
+      this.backgroundTasks.delete(bgId);
+      this.backgroundResults.delete(bgId);
 
       const summary = output.length > 200 ? output.slice(0, 200) : output;
       const durationMs = task.finishedAt !== undefined ? task.finishedAt - task.startedAt : 0;

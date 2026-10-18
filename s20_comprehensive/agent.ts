@@ -17,7 +17,7 @@
  *   s18 Worktree       → 真实 git worktree 隔离（spawnSync 调 git）+ 变更保护
  *   s19 MCP Plugin     → 进程内 MCP 服务器（教学版）+ 工具池装配（mcp__{server}__{tool}）
  *
- * Mock 只替换「模型调用」这一件事：并发任务、定时器、锁、持久化、git、协议全部是真实代码。
+ * Mock 只替换「模型调用」这一件事：并发任务、定时器、持久化、git、协议全部是真实代码。
  * 默认 AGENT_MODE=mock 完全离线可跑，末尾打印 [S20] 完成。
  */
 
@@ -40,7 +40,6 @@ import { extractText, getToolUseBlocks } from '../runtime/response.ts';
 import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
-import { Mutex } from '../runtime/locks.ts';
 import { classifyError } from '../runtime/errors.ts';
 import { resolveMode } from '../runtime/env.ts';
 import {
@@ -700,7 +699,6 @@ async function flushBackground(): Promise<void> {
 const cronJobs = new Map<string, CronJob>();
 const cronQueue: CronJob[] = [];
 const cronLastFired = new Map<string, string>();
-const cronLock = new Mutex();
 let cronTimer: ReturnType<typeof setInterval> | undefined;
 
 function cronFieldMatches(field: string, value: number): boolean {
@@ -757,19 +755,17 @@ function loadDurableJobs(): void {
 async function cronTick(): Promise<void> {
   const now = new Date();
   const marker = minuteMarker(now);
-  await cronLock.withLock(() => {
-    for (const job of [...cronJobs.values()]) {
-      if (!cronMatches(job.cron, now)) continue;
-      if (cronLastFired.get(job.id) === marker) continue;
-      cronLastFired.set(job.id, marker);
-      cronQueue.push(job);
-      console.log(`  \x1b[35m[cron] fired ${job.id}: ${truncate(job.prompt, 50)}\x1b[0m`);
-      if (!job.recurring) {
-        cronJobs.delete(job.id);
-        if (job.durable) saveDurableJobs();
-      }
+  for (const job of [...cronJobs.values()]) {
+    if (!cronMatches(job.cron, now)) continue;
+    if (cronLastFired.get(job.id) === marker) continue;
+    cronLastFired.set(job.id, marker);
+    cronQueue.push(job);
+    console.log(`  \x1b[35m[cron] fired ${job.id}: ${truncate(job.prompt, 50)}\x1b[0m`);
+    if (!job.recurring) {
+      cronJobs.delete(job.id);
+      if (job.durable) saveDurableJobs();
     }
-  });
+  }
 }
 function startCronScheduler(): void {
   cronTimer = setInterval(() => void cronTick(), CRON_TICK_MS);
@@ -796,11 +792,8 @@ function consumeCronQueue(): CronJob[] {
  *   send()      —— append 一行（真实追加写，可带 metadata）
  *   readInbox() —— 读出全部行并清空（消费式读取）
  *   requeue()   —— 把暂不处理的消息原样写回（等待协议响应时不丢其它消息）
- *
- * 并发队友会同时读写，用 Mutex 串行化 append / read-clear，避免交错写坏 JSONL。
  */
 class MessageBus {
-  private readonly mutex = new Mutex();
   private seq = 0;
   private inboxPath(agentId: string): string {
     validateAgentId(agentId);
@@ -813,34 +806,28 @@ class MessageBus {
     type = 'message',
     metadata: Record<string, unknown> = {},
   ): Promise<string> {
-    return this.mutex.withLock(() => {
-      fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
-      const msg: AgentMessage = { from, to, body, type, timestamp: Date.now(), metadata };
-      fs.appendFileSync(this.inboxPath(to), JSON.stringify(msg) + '\n', 'utf8');
-      signalMailbox(to);
-      console.log(`  \x1b[33m[bus] ${from} → ${to}: (${type}) ${truncate(body, 50)}\x1b[0m`);
-      return `msg_${Date.now()}_${++this.seq}`;
-    });
+    fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
+    const msg: AgentMessage = { from, to, body, type, timestamp: Date.now(), metadata };
+    fs.appendFileSync(this.inboxPath(to), JSON.stringify(msg) + '\n', 'utf8');
+    signalMailbox(to);
+    console.log(`  \x1b[33m[bus] ${from} → ${to}: (${type}) ${truncate(body, 50)}\x1b[0m`);
+    return `msg_${Date.now()}_${++this.seq}`;
   }
   async readInbox(agentId: string): Promise<AgentMessage[]> {
-    return this.mutex.withLock(() => {
-      const p = this.inboxPath(agentId);
-      if (!fs.existsSync(p)) return [];
-      const msgs = fs
-        .readFileSync(p, 'utf8')
-        .split('\n')
-        .filter((l) => l.trim())
-        .map((l) => JSON.parse(l) as AgentMessage);
-      fs.writeFileSync(p, '', 'utf8');
-      return msgs;
-    });
+    const p = this.inboxPath(agentId);
+    if (!fs.existsSync(p)) return [];
+    const msgs = fs
+      .readFileSync(p, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as AgentMessage);
+    fs.writeFileSync(p, '', 'utf8');
+    return msgs;
   }
   async requeue(agentId: string, msgs: AgentMessage[]): Promise<void> {
     if (msgs.length === 0) return;
-    return this.mutex.withLock(() => {
-      fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
-      fs.appendFileSync(this.inboxPath(agentId), msgs.map((m) => JSON.stringify(m)).join('\n') + '\n', 'utf8');
-    });
+    fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
+    fs.appendFileSync(this.inboxPath(agentId), msgs.map((m) => JSON.stringify(m)).join('\n') + '\n', 'utf8');
   }
 }
 const BUS = new MessageBus();

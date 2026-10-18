@@ -17,7 +17,7 @@
  *
  * Mock 只替换「模型调用」这一件事：协议状态机、信箱 I/O、request_id 关联全部是真实代码。
  *
- * 路径来自 runtime/workspace.ts（.mailboxes/），锁来自 runtime/locks.ts。
+ * 路径来自 runtime/workspace.ts（.mailboxes/）。
  */
 
 import { runAgent } from '../runtime/core.ts';
@@ -28,7 +28,6 @@ import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import { MAILBOXES_DIR, WORKSPACE_ROOT } from '../runtime/workspace.ts';
-import { Mutex } from '../runtime/locks.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -130,12 +129,8 @@ function validateAgentId(agentId: string): void {
  *   send()       —— 追加一行（真实写文件，可带 metadata）
  *   readInbox()  —— 读出全部消息，然后把文件清空（读完即取走）
  *   requeue()    —— 把这次没处理的消息原样写回（等待协议响应时不丢别的消息）
- *
- * 多个队友会同时读写，因此用 runtime/locks.ts 的 Mutex 加锁：同一时刻只允许一个
- * 操作在追加或读出清空，避免两次写叠在一起把文件写坏。
  */
 class MessageBus {
-  private readonly mutex = new Mutex();
   private seq = 0;
 
   constructor() {
@@ -154,41 +149,35 @@ class MessageBus {
     type = 'message',
     metadata: Record<string, unknown> = {},
   ): Promise<string> {
-    return this.mutex.withLock(() => {
-      fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
-      const msg: AgentMessage = { from, to, body, type, timestamp: Date.now(), metadata };
-      fs.appendFileSync(this.inboxPath(to), JSON.stringify(msg) + '\n', 'utf8');
-      const messageId = `msg_${Date.now()}_${++this.seq}`;
-      console.log(`  \x1b[33m[bus] ${from} → ${to}: (${type}) ${truncate(body, 50)}\x1b[0m`);
-      // 唤醒正在空闲等待的收件队友（没有在等的就忽略；队友那边还会自己轮询）
-      signalMailbox(to);
-      return messageId;
-    });
+    fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
+    const msg: AgentMessage = { from, to, body, type, timestamp: Date.now(), metadata };
+    fs.appendFileSync(this.inboxPath(to), JSON.stringify(msg) + '\n', 'utf8');
+    const messageId = `msg_${Date.now()}_${++this.seq}`;
+    console.log(`  \x1b[33m[bus] ${from} → ${to}: (${type}) ${truncate(body, 50)}\x1b[0m`);
+    // 唤醒正在空闲等待的收件队友（没有在等的就忽略；队友那边还会自己轮询）
+    signalMailbox(to);
+    return messageId;
   }
 
   async readInbox(agentId: string): Promise<AgentMessage[]> {
-    return this.mutex.withLock(() => {
-      const p = this.inboxPath(agentId);
-      if (!fs.existsSync(p)) return [];
-      const msgs = fs
-        .readFileSync(p, 'utf8')
-        .split('\n')
-        .filter((line) => line.trim())
-        .map((line) => JSON.parse(line) as AgentMessage);
-      // 读完即取走：读出全部消息后把文件清空为 0 字节，保留目录和文件名（便于看到信箱布局）。
-      fs.writeFileSync(p, '', 'utf8');
-      return msgs;
-    });
+    const p = this.inboxPath(agentId);
+    if (!fs.existsSync(p)) return [];
+    const msgs = fs
+      .readFileSync(p, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as AgentMessage);
+    // 读完即取走：读出全部消息后把文件清空为 0 字节，保留目录和文件名（便于看到信箱布局）。
+    fs.writeFileSync(p, '', 'utf8');
+    return msgs;
   }
 
   /** 把这次没处理的消息原样写回信箱，保持它们原来的先后顺序。 */
   async requeue(agentId: string, msgs: AgentMessage[]): Promise<void> {
     if (msgs.length === 0) return;
-    return this.mutex.withLock(() => {
-      fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
-      const data = msgs.map((m) => JSON.stringify(m)).join('\n') + '\n';
-      fs.appendFileSync(this.inboxPath(agentId), data, 'utf8');
-    });
+    fs.mkdirSync(MAILBOXES_DIR, { recursive: true });
+    const data = msgs.map((m) => JSON.stringify(m)).join('\n') + '\n';
+    fs.appendFileSync(this.inboxPath(agentId), data, 'utf8');
   }
 }
 

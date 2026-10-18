@@ -35,14 +35,12 @@ Python 用模块级的三样东西实现后台执行：
 _bg_counter = 0
 background_tasks: dict[str, dict] = {}   # bg_id → {tool_use_id, command, status}
 background_results: dict[str, str] = {}   # bg_id → output
-background_lock = threading.Lock()
 ```
 
-TypeScript 用 `runtime/locks.ts` 的 `Mutex` 把它们封进 `BackgroundRegistry`：
+TypeScript 把它们封进 `BackgroundRegistry`：
 
 ```typescript
 class BackgroundRegistry {
-  private readonly lock = new Mutex();                 // 对应 background_lock
   private counter = 0;                                 // 对应 _bg_counter
   private readonly backgroundTasks = new Map<string, BackgroundTaskRecord>();
   private readonly backgroundResults = new Map<string, string>();
@@ -50,17 +48,13 @@ class BackgroundRegistry {
   async startBackgroundTask(block: ToolUseBlock): Promise<string> {
     this.counter += 1;
     const bgId = `bg_${String(this.counter).padStart(4, '0')}`;   // bg_0001, bg_0002 ...
-    await this.lock.withLock(() => {
-      this.backgroundTasks.set(bgId, { toolUseId: block.id, command, status: 'running' });
-    });
+    this.backgroundTasks.set(bgId, { toolUseId: block.id, command, status: 'running' });
 
     // 不等它：主循环拿到 bgId 后立刻继续，后台这段代码稍后自己把结果写回。
     (async () => {
       const result = await executeTool(block);
-      await this.lock.withLock(() => {
-        this.backgroundTasks.get(bgId)!.status = 'completed';
-        this.backgroundResults.set(bgId, result);
-      });
+      this.backgroundTasks.get(bgId)!.status = 'completed';
+      this.backgroundResults.set(bgId, result);
     })().catch(...);
 
     return bgId;   // 立即返回
@@ -69,7 +63,7 @@ class BackgroundRegistry {
 ```
 
 `(async () => { ... })()` 不被 `await` 接管，对应 `Thread(daemon=True).start()`：调用方拿到
-`bg_0001` 后主循环马上继续，后台那段代码稍后才把结果写回注册表（加锁保证同一时刻只有一个操作在改表）。
+`bg_0001` 后主循环马上继续，后台那段代码稍后才把结果写回注册表。
 
 ### 收集：`<task_notification>` 通知
 
@@ -120,7 +114,6 @@ const notifs = yield* perform({ type: 'CollectBackgroundResults', input: {} });
 | `execute_tool(block)`（前台） | `ExecuteTool` Effect |
 | `start_background_task(block)` | `StartBackground` Effect |
 | `threading.Thread(daemon=True).start()` | Handler 内不 `await` 的 async 函数 |
-| `background_lock` | `new Mutex()` |
 | `collect_background_results()` | `CollectBackgroundResults` Effect |
 | `bg_%04d` 命名 | `bg_${String(n).padStart(4, '0')}` |
 | `should_run_background()` | `shouldRunBackground()` |
@@ -188,7 +181,7 @@ LLM 下一轮开始时就能在同一批用户消息里看到 `<task_notificatio
 | 组件 | 之前 (s12) | 之后 (s13) |
 |------|-----------|-----------|
 | 任务执行 | 同步等待 | `bash run_in_background` / 按关键字判断慢命令 → 后台 |
-| 后台机制 | — | `BackgroundRegistry`（Mutex + tasks/results 两张表） |
+| 后台机制 | — | `BackgroundRegistry`（tasks/results 两张表） |
 | 任务命名 | — | `bg_0001`（`bg_%04d`，自增计数） |
 | 完成通知 | 主动查询任务状态 | `collectBackgroundResults` 自动注入 `<task_notification>` |
 | 新 Effect | — | `ExecuteTool`、`StartBackground`、`CollectBackgroundResults` |
@@ -222,7 +215,7 @@ npm run s13        # 默认 mock，离线运行
 ## 本章小结
 
 **后台任务 = `startBackgroundTask` 用一个「启动后不等它」的 async 函数，让工作在对话之外独立进行，
-注册表用 `Mutex` 保护 `background_tasks` / `background_results` 两张表；`bg_%04d` 是任务身份；
+注册表用 `background_tasks` / `background_results` 两张表记录任务与结果；`bg_%04d` 是任务身份；
 `collectBackgroundResults` 把已完成任务整理成 `<task_notification>`；主循环每轮把通知并进 user 消息，
 让模型无需主动查询即可获知后台状态。**
 

@@ -8,7 +8,7 @@
 
 **问题的本质**：前 19 章各展示一个机制。真实 Agent 需要在一个连贯的工作流里同时驱动它们——任务图、队友协议、后台执行、cron、worktree 隔离、MCP 工具池、错误恢复、上下文压缩。
 
-本章把这些机制**真正组合**进一个可运行的 Harness：`s20_comprehensive/agent.ts` 声明 **41 个 Effect**，全部由 `s20Handlers` 提供真实实现（`EffectHandlers<S20Effect>` 的类型映射强制“每个 Effect 都必须有 handler”，避免出现声明了却接不上的无用代码）。**唯一被 mock 替换的是“模型调用”这一步**——并发任务、定时器、锁、持久化、git、协议全部是真实副作用。
+本章把这些机制**真正组合**进一个可运行的 Harness：`s20_comprehensive/agent.ts` 声明 **41 个 Effect**，全部由 `s20Handlers` 提供真实实现（`EffectHandlers<S20Effect>` 的类型映射强制“每个 Effect 都必须有 handler”，避免出现声明了却接不上的无用代码）。**唯一被 mock 替换的是“模型调用”这一步**——并发任务、定时器、持久化、git、协议全部是真实副作用。
 
 ---
 
@@ -31,7 +31,7 @@
 | 任务系统 + blockedBy 依赖图 | s12 / s17 | 每个任务一个 JSON 文件持久化到 `.tasks/`；`blockingDeps`/`canStart` 真实判定依赖；`complete` 会计算并回报新解除阻塞的任务 |
 | 后台执行 | s13 | `startBackground()` 启动独立的后台异步任务，登记到注册表；`collectBackgroundResults()` 在后续轮次收取 `task_notification`；收尾 `flushBackground()` 等待/清理 |
 | cron 调度器 | s14 | `setInterval`（`.unref()`）真实定时触发；`.scheduled_tasks.json` 持久化需要长期保留的任务，启动时 `loadDurableJobs()` 恢复；按分钟标记去重；被命中后进入队列，由主循环送入 |
-| 队友循环 + 信箱 | s15 | 每个队友是一条独立 `runAgent` 子循环（真实并发 Promise）；`MessageBus` 以 `.mailboxes/*.jsonl` 写入磁盘 + `Mutex` 加锁、同一时刻只允许一个写入 + `waitForMailbox` 唤醒 |
+| 队友循环 + 信箱 | s15 | 每个队友是一条独立 `runAgent` 子循环（真实并发 Promise）；`MessageBus` 以 `.mailboxes/*.jsonl` 写入磁盘 + `waitForMailbox` 唤醒 |
 | request_id 协议状态机 | s16 | `pendingRequests` 登记中的请求；`matchResponse` 按 `request_id` + 期望类型**双校验**，未知 / 错类型 / 重复一律拒绝；`pollForResponse` / `waitForMailbox` 同步 |
 | 计划审批关口（真关口） | s16 | 队友 `SubmitPlan` 把计划登记为待处理，并发 `plan_approval_request`，随后 `WaitForPlanResponse` **阻塞**直到 lead 用 `ReviewPlan` 发回匹配的 `plan_approval_response`（并清除该待处理记录） |
 | 自主 WORK/IDLE/SHUTDOWN | s17 | 队友空闲时 `IdlePoll` 阻塞等待；可 `autoClaim` 主动认领可以开始的待处理任务；收到 `shutdown_request` 立即回 `shutdown_response` 退出 |

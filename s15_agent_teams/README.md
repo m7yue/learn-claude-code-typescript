@@ -62,7 +62,6 @@ const replies = yield* perform({ type: 'CheckInbox', input: { agentId: 'main' } 
 - 路径来自 `runtime/workspace.ts` 的 `MAILBOXES_DIR`（`AGENT_WORKSPACE` 可覆盖根目录）。
 - 每行一条 JSON 消息，消息结构字段：`{ from, to, body, type, timestamp }`。
 - `send()` 用 `appendFileSync` 追加一行；`readInbox()` 读出全部行后清空（读完即取走）。
-- 并发队友用 `runtime/locks.ts` 的 `Mutex` 加锁（同一时刻只允许一个操作），避免 append / read-clear 交错写坏 JSONL。
 
 ### 2. 队友子循环（真实 Agent，不是预设的固定回复）
 

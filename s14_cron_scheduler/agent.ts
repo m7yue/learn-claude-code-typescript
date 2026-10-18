@@ -21,7 +21,7 @@
  *        ▼
  *   runAgentTurn()：每轮 Chat 前先 consumeCronQueue()，把 [Scheduled] 注入会话
  *
- * 这两层定时器 + 队列 + Mutex 锁 + durable 持久化都是真实实现，
+ * 这两层定时器 + 队列 + agentLock（保护单个 Agent turn）+ durable 持久化都是真实实现，
  * mock 只替换 LLM 调用（callChat 的 mockFn），不替换任何基础设施。
  */
 
@@ -79,7 +79,6 @@ const QUEUE_MS = Number(process.env.S14_QUEUE_MS) || 200;
 const scheduledJobs = new Map<string, CronJob>();
 const cronQueue: CronJob[] = [];
 const lastFired = new Map<string, string>(); // job_id → "YYYY-MM-DD HH:MM"
-const cronLock = new Mutex();   // 保护 scheduledJobs / cronQueue / 持久化
 const agentLock = new Mutex();  // 保证同一时刻只有一个 Agent turn 在跑
 
 // ---- 单字段 cron 匹配：支持 * | N | */N | N-M | N,M ----
@@ -200,7 +199,7 @@ function loadDurableJobs(): void {
   }
 }
 
-// ---- 注册 / 取消（持 cronLock）----
+// ---- 注册 / 取消 ----
 // 返回 CronJob 或错误字符串。
 async function scheduleJob(
   cronId: string,
@@ -212,23 +211,19 @@ async function scheduleJob(
   const err = validateCron(cron);
   if (err) return err;
   const job: CronJob = { id: cronId, cron, prompt, recurring, durable };
-  await cronLock.withLock(() => {
-    scheduledJobs.set(job.id, job);
-    if (durable) saveDurableJobs();
-  });
+  scheduledJobs.set(job.id, job);
+  if (durable) saveDurableJobs();
   console.log(`[cron register] ${job.id} '${cron}' → ${prompt}`);
   return job;
 }
 
 async function cancelJob(cronId: string): Promise<boolean> {
-  return cronLock.withLock(() => {
-    const job = scheduledJobs.get(cronId);
-    if (!job) return false;
-    scheduledJobs.delete(cronId);
-    if (job.durable) saveDurableJobs();
-    console.log(`[cron cancel] ${cronId}`);
-    return true;
-  });
+  const job = scheduledJobs.get(cronId);
+  if (!job) return false;
+  scheduledJobs.delete(cronId);
+  if (job.durable) saveDurableJobs();
+  console.log(`[cron cancel] ${cronId}`);
+  return true;
 }
 
 // ---- 调度器 tick：检查所有任务，命中则入队（分钟级去重）----
@@ -241,28 +236,26 @@ function minuteMarker(dt: Date): string {
 async function cronSchedulerTick(): Promise<void> {
   const now = new Date();
   const marker = minuteMarker(now);
-  await cronLock.withLock(() => {
-    for (const job of [...scheduledJobs.values()]) {
-      try {
-        if (!cronMatches(job.cron, now)) continue;
-        if (lastFired.get(job.id) !== marker) {
-          cronQueue.push(job);
-          lastFired.set(job.id, marker);
-          console.log(`[cron fire] ${job.id} → ${job.prompt}`);
-        }
-        if (!job.recurring) {
-          scheduledJobs.delete(job.id);
-          if (job.durable) saveDurableJobs();
-        }
-      } catch (err) {
-        console.log(`[cron error] ${job.id}: ${err instanceof Error ? err.message : String(err)}`);
+  for (const job of [...scheduledJobs.values()]) {
+    try {
+      if (!cronMatches(job.cron, now)) continue;
+      if (lastFired.get(job.id) !== marker) {
+        cronQueue.push(job);
+        lastFired.set(job.id, marker);
+        console.log(`[cron fire] ${job.id} → ${job.prompt}`);
       }
+      if (!job.recurring) {
+        scheduledJobs.delete(job.id);
+        if (job.durable) saveDurableJobs();
+      }
+    } catch (err) {
+      console.log(`[cron error] ${job.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
-  });
+  }
 }
 
 // 消费队列（由 Agent Generator 在每轮 Chat 前同步调用）。
-// JS 单线程，这一步相对于其它 JS 执行是原子的，无需 await 锁。
+// JS 单线程，这一步相对于其它 JS 执行是原子的。
 function consumeCronQueue(): CronJob[] {
   const fired = cronQueue.slice();
   cronQueue.length = 0;
@@ -349,7 +342,7 @@ const s14Handlers: EffectHandlers<S14Effect> = {
   Chat: async (effect: ChatEffect): Promise<LLMResponse> => {
     const round = effect.input.messages.filter(m => m.role === 'assistant').length;
     console.log(`\n[Chat] → 轮次 ${round + 1}`);
-    // mock 只替换这一行模型调用；其余机制（调度器/队列/锁/持久化）都是真实代码。
+    // mock 只替换这一行模型调用；其余机制（调度器/队列/agentLock/持久化）都是真实代码。
     return callChat(mockLLM, effect.input.messages, {
       tools: schemasFor('schedule_cron', 'list_crons', 'cancel_cron'),
       system: SYSTEM_PROMPT,
@@ -364,7 +357,7 @@ const s14Handlers: EffectHandlers<S14Effect> = {
   },
 
   ListCrons: async (): Promise<CronJob[]> => {
-    return cronLock.withLock(() => [...scheduledJobs.values()]);
+    return [...scheduledJobs.values()];
   },
 
   CancelCron: async (effect: CancelCronEffect): Promise<{ cancelled: boolean; cronId: string }> => {

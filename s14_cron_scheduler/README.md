@@ -52,7 +52,7 @@ yield* perform({ type: 'CancelCron', input: { cronId: 'cleanup' } });
 | `run_list_crons()` | `ListCrons` Effect |
 | `cron_scheduler_loop()` 守护线程 | 真实 `setInterval(cronSchedulerTick, TICK_MS)` |
 | `queue_processor_loop()` 守护线程 | 真实 `setInterval(queueProcessorTick, QUEUE_MS)` |
-| `cron_queue` + `cron_lock` | `cronQueue` 数组 + `Mutex`（`runtime/locks.ts`） |
+| `cron_queue` | `cronQueue` 数组 |
 | `agent_lock` | `agentLock: Mutex`（`tryAcquire` 对应 `acquire(blocking=False)`） |
 | `_last_fired` 分钟标记 | `lastFired: Map<id, "YYYY-MM-DD HH:MM">` |
 | `durable=True` | 写入工作区 `.scheduled_tasks.json` |
@@ -77,26 +77,24 @@ const queueTimer = setInterval(() => { void queueProcessorTick(); }, QUEUE_MS);
 
 周期可由环境变量调整：`S14_TICK_MS`（默认 `1000`）、`S14_QUEUE_MS`（默认 `200`）。
 
-调度器 tick（持 `cronLock`）：
+调度器 tick：
 
 ```typescript
 async function cronSchedulerTick(): Promise<void> {
   const now = new Date();
   const marker = minuteMarker(now);            // "YYYY-MM-DD HH:MM"
-  await cronLock.withLock(() => {
-    for (const job of [...scheduledJobs.values()]) {
-      if (!cronMatches(job.cron, now)) continue;
-      if (lastFired.get(job.id) !== marker) {  // 分钟级去重
-        cronQueue.push(job);
-        lastFired.set(job.id, marker);
-        console.log(`[cron fire] ${job.id} → ${job.prompt}`);
-      }
-      if (!job.recurring) {                    // 一次性任务触发后注销
-        scheduledJobs.delete(job.id);
-        if (job.durable) saveDurableJobs();
-      }
+  for (const job of [...scheduledJobs.values()]) {
+    if (!cronMatches(job.cron, now)) continue;
+    if (lastFired.get(job.id) !== marker) {  // 分钟级去重
+      cronQueue.push(job);
+      lastFired.set(job.id, marker);
+      console.log(`[cron fire] ${job.id} → ${job.prompt}`);
     }
-  });
+    if (!job.recurring) {                    // 一次性任务触发后注销
+      scheduledJobs.delete(job.id);
+      if (job.durable) saveDurableJobs();
+    }
+  }
 }
 ```
 
@@ -136,7 +134,7 @@ while (true) {
 }
 ```
 
-`consumeCronQueue` 是同步的（JS 单线程下相对于其它 JS 执行是不可分割的，中间不会被打断），因此 Generator 无需 await 锁即可安全读取。
+`consumeCronQueue` 是同步的（JS 单线程下相对于其它 JS 执行是不可分割的，中间不会被打断）。
 
 ### 4. cron 5 字段表达式解析
 
@@ -203,7 +201,7 @@ function saveDurableJobs(): void {
 | 持久化 | 无 | `durable=true` → `.scheduled_tasks.json` |
 | 新 Effect | `SpawnBackground`, `CollectNotifications` | `ScheduleCron`, `ListCrons`, `CancelCron` |
 | 新工具函数 | — | `cronFieldMatches`, `cronMatches`, `validateCron` |
-| 并发控制 | 单线程 setTimeout | `cronLock` + `agentLock`（`runtime/locks.ts`） |
+| 并发控制 | 单线程 setTimeout | `agentLock`（`runtime/locks.ts`，保护一个完整 turn） |
 
 > 说明：本章聚焦 cron 机制，为保持章节精简，未重复实现后台任务——该机制已在 [s13](../s13_background_tasks/) 讲解。这里不做任何"假"的后台实现（宁可省略也不伪造）。
 
