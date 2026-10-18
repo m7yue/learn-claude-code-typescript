@@ -160,6 +160,11 @@ const expectations: Record<string, Check[]> = {
     { what: "依赖检查 canStart", match: /canStart/ },
     { what: "真实的 blockedBy 依赖图", match: /blockedBy/ },
     { what: "注册 get_task 工具", match: /['"]get_task['"]/ },
+    {
+      what: "complete 只解锁直接依赖刚完成任务的下游（不是所有 canStart 的 pending 任务）",
+      match: /blockedBy\.includes\(taskId\)[\s\S]{0,120}?canStart\(t\.id\)/,
+      absent: /blockedBy\.length > 0 && canStart/,
+    },
   ],
   "s13_background_tasks": [
     { what: "bg_%04d 命名", match: /padStart\(4,\s*['"]0['"]\)/ },

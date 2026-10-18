@@ -108,8 +108,8 @@ function completeTask(taskId: string): CompleteResult {
   saveTask(task);                      // 真实写文件
   const unblocked = listTasks().filter(t =>
     t.status === 'pending' &&
-    t.blockedBy.length > 0 &&
-    canStart(t.id)                     // blockedBy 全部存在且 completed
+    t.blockedBy.includes(taskId) &&    // 只算直接依赖刚完成任务的下游
+    canStart(t.id)                     // 它的所有依赖都已存在且 completed
   );
   return { ok: true, task, unblocked };
 }
@@ -142,11 +142,11 @@ mock 只替代「模型调用」；文件读写和依赖检查都是真实代码
 ## 运行
 
 ```bash
-# 默认 mock，离线运行（在 <workspace>/.tasks/ 下留下真实任务文件）
-npm run s12
+# 强制离线 mock（本地 .env 设了 AGENT_MODE=real 时用 --mock）
+AGENT_WORKSPACE=/tmp/s12-demo npm run s12 -- --mock
 
-# 用独立工作区隔离副作用
-AGENT_WORKSPACE=/tmp/s12-demo npm run s12
+# 真实模型（需要 .env 里的 token 与 MODEL_ID）
+AGENT_WORKSPACE=/tmp/s12-real npm run s12 -- --real
 ```
 
 ---

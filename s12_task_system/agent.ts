@@ -188,9 +188,9 @@ function completeTask(taskId: string): CompleteResult {
   }
   task.status = 'completed';
   saveTask(task);
-  // 依赖该任务、且此刻所有依赖都已完成的下游 pending 任务被解锁。
+  // 只有 blockedBy 直接包含刚完成任务、且此刻依赖全部完成的 pending 下游被解锁。
   const unblocked = listTasks().filter(
-    (t) => t.status === 'pending' && t.blockedBy.length > 0 && canStart(t.id),
+    (t) => t.status === 'pending' && t.blockedBy.includes(taskId) && canStart(t.id),
   );
   return { ok: true, task, unblocked };
 }
@@ -307,7 +307,7 @@ function mockLLM(messages: Message[]): LLMResponse {
     case 3:
       return {
         stop_reason: 'tool_use',
-        content: [text(`查看收尾任务 ${c} 的依赖详情。`), tool('c5', 'get_task', { id: c })],
+        content: [text(`查看收尾任务 ${c} 的依赖详情。`), tool('c5', 'get_task', { taskId: c })],
       };
     case 4:
       return {
@@ -353,7 +353,10 @@ function mockLLM(messages: Message[]): LLMResponse {
 // real 模式注入的 system prompt，引导模型使用工具完成任务。
 // mock 模式不读取该字段，故零配置运行行为不变。
 const SYSTEM_PROMPT = buildSystemPrompt(
-  '使用 create_task / list_tasks / get_task / claim_task / complete_task 跟踪依赖与进度。先创建所有任务节点，待 create_task 返回运行时生成的 ID 后，再用这些确切 ID 声明依赖。',
+  '使用 create_task / list_tasks / get_task / claim_task / complete_task 跟踪依赖与进度；直接调用工具推进，不要只输出文字计划。',
+  '先创建无依赖的起始任务；有依赖的任务必须等 create_task 返回确切 ID 后再创建，blockedBy 不要猜测或编造。',
+  '按依赖顺序操作：依赖全部 completed 后再 claim 下游；每次 complete 后阅读 tool_result 里的 Unblocked。',
+  '工作区 .tasks/ 可能残留其他运行的任务：只操作本次请求新建的任务，不要认领、完成或改动无关任务；本演示不需要 bash / read_file / write_file，请只用任务工具。',
 );
 
 const s12Handlers = {
@@ -531,8 +534,8 @@ function* agentLoop(perform: PerformFn<S12Effect>) {
             break;
           }
           case 'get_task': {
-            // schema 注册的是数字键 id；章节内部统一用字符串 taskId。
-            const rawId = block.input['id'] ?? block.input['taskId'];
+            // 工具参数定义同时列出 id（工程层数字）与 taskId（章节字符串）；本章优先 taskId，兼容回退 id。
+            const rawId = block.input['taskId'] ?? block.input['id'];
             output = yield* perform({ type: 'GetTask', input: { taskId: String(rawId ?? '') } });
             break;
           }

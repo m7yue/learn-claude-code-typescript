@@ -65,6 +65,7 @@ const requiredStdout: Record<string, string[]> = {
     "[AssemblePrompt] 重新组装: [identity, tools, workspace, task]",
     "[AssemblePrompt] ✓ 缓存命中",
   ],
+  s12_task_system: ["[ClaimTask] ✗ Blocked by:", "[CompleteTask] 解锁: 编写测试"],
 };
 
 for (const [dir, marker] of chapters) {
