@@ -66,6 +66,17 @@ const requiredStdout: Record<string, string[]> = {
     "[AssemblePrompt] ✓ 缓存命中",
   ],
   s12_task_system: ["[ClaimTask] ✗ Blocked by:", "[CompleteTask] 解锁: 编写测试"],
+  s13_background_tasks: [
+    "[background] dispatched bg_0001",
+    "[inject] 注入 1 条后台通知",
+    "<task-id>bg_0001</task-id>",
+    "后台任务完成通知",
+  ],
+};
+
+/** 各章演示产物（相对工作区根目录，而不是章节目录）。 */
+const workspaceArtifacts: Record<string, string[]> = {
+  s13_background_tasks: [".task_outputs/bg_0001.log"],
 };
 
 for (const [dir, marker] of chapters) {
@@ -90,6 +101,12 @@ for (const [dir, marker] of chapters) {
     for (const rel of demoArtifacts[dir] ?? []) {
       assert.ok(
         existsSync(join(workspace, dir, rel)),
+        `${dir} 未在工作区生成 ${rel}（工作区: ${workspace}）`,
+      );
+    }
+    for (const rel of workspaceArtifacts[dir] ?? []) {
+      assert.ok(
+        existsSync(join(workspace, rel)),
         `${dir} 未在工作区生成 ${rel}（工作区: ${workspace}）`,
       );
     }
