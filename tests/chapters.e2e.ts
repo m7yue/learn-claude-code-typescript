@@ -72,11 +72,19 @@ const requiredStdout: Record<string, string[]> = {
     "<task-id>bg_0001</task-id>",
     "后台任务完成通知",
   ],
+  s14_cron_scheduler: [
+    "[cron register] health_check",
+    "[cron fire] health_check",
+    "[inject cron] 执行健康检查",
+    "[queue processor] delivering scheduled work",
+    "已收到 [Scheduled]",
+  ],
 };
 
 /** 各章演示产物（相对工作区根目录，而不是章节目录）。 */
 const workspaceArtifacts: Record<string, string[]> = {
   s13_background_tasks: [".task_outputs/bg_0001.log"],
+  s14_cron_scheduler: [".scheduled_tasks.json"],
 };
 
 for (const [dir, marker] of chapters) {

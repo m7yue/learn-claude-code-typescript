@@ -195,7 +195,7 @@ const expectations: Record<string, Check[]> = {
     { what: "主流程用 agentLock.withLock 包住 runAgentTurn", match: /agentLock\.withLock\(\(\) => runAgentTurn\(\)\)/ },
     { what: "s14 不再使用 cronLock", absent: /\bcronLock\b/ },
     { what: "minute 去重标记", match: /lastFired|_last_fired/i },
-    { what: "cron 字段解析支持区间/列表", match: /cronFieldMatches/ },
+    { what: "cron 字段解析支持区间/列表（parseCronField）", match: /parseCronField/ },
     { what: "list_crons 工具", match: /list_crons/ },
   ],
   "s15_agent_teams": [
