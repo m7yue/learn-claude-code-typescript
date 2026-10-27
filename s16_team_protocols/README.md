@@ -27,37 +27,47 @@ agentB.doTask();  // 没有状态追踪
 
 ## 代数效应视角
 
-三个协议 Effect 构建端到端的协作协议。注意它们都是**真实等待响应**的：
+四个协议 Effect 构建端到端的协作协议。请求方真实等待响应，审批方校验状态后回发：
 
 ```typescript
-// 1. 请求计划：注册 ProtocolState(pending)，通过信箱发给队友，
-//    然后有界轮询自己的信箱，直到收到同 request_id 的 plan_approval_response
+// 1. Lead 请求计划：发普通 plan_request 提示，等队友把 plan_approval_request 送过来
 const plan = yield* perform({
   type: 'RequestPlan',
   input: { goal: '重构认证模块', context: '升级到 OAuth 2.0，保持向后兼容' }
 });
-// plan.steps 来自【队友一次真实 Chat 回合】写回的消息，而非 Handler 硬编码
+// plan.status === 'pending'
+// plan.requestId / plan.planText 来自【队友一次真实 Chat 回合】提交的 plan_approval_request
 
-// 2. 审查计划（由审查队友的循环调用）：
-//    校验 request_id 是否为 pending 的 plan_approval，做真实判定，回发响应
+// 2. 队友提交计划（队友循环调用）：
+//    注册 ProtocolState(pending)，把完整计划作为 plan_approval_request 发给 Lead，
+//    然后阻塞等待同 request_id 的 plan_approval_response
+const submitted = yield* perform({
+  type: 'SubmitPlan',
+  input: { from: 'planner', plan: '1. ...\n2. ...\n3. ...' }
+});
+// submitted.outcome === 'approved' | 'rejected' | 'shutdown'
+
+// 3. Lead 审批（Lead 循环调用）：
+//    校验 request_id 是否为 pending 的 plan_approval，按计划步骤数判定；
+//    先回发 plan_approval_response，发送成功后再用 settleResponse 落定
 const { approved, feedback } = yield* perform({
   type: 'ReviewPlan',
-  input: { requestId: plan.requestId, reviewerId: 'reviewer', planText: '...' }
+  input: { requestId: plan.requestId, reviewerId: 'main' }
 });
 
-// 3. 优雅关闭：注册 pending，发送 shutdown_request，等待同 request_id 的 shutdown_response
+// 4. 优雅关闭：Lead 注册 pending，发送 shutdown_request，等待同 request_id 的 shutdown_response
 const { acknowledged } = yield* perform({
   type: 'RequestShutdown',
-  input: { agentId: 'reviewer', reason: '任务完成' }
+  input: { agentId: 'planner', reason: '任务完成' }
 });
 ```
 
-**关键洞见**：协议 = 强制执行的 Effect 顺序 + 请求-响应关联。`RequestPlan` 产生 `requestId`，响应经信箱回流，`matchResponse(requestId, type)` 双校验后才把状态从 `pending` 落为 `approved` / `rejected`。没有任何一步是"调用即成功"。
+**关键洞见**：协议 = 强制执行的 Effect 顺序 + 请求-响应关联。计划审批的 `requestId` 由队友的 `SubmitPlan` 产生，随 `plan_approval_request` 送到 Lead；Lead 的 `review_plan` 先回发 `plan_approval_response`，发送成功后再用 `settleResponse` 双校验并落定；发送失败时请求保持 pending，由等待方超时兜底。`submit_plan` 等到匹配响应才继续。关闭请求则由 Lead 的 `RequestShutdown` 产生 `requestId`。没有任何一步是"调用即成功"。
 
 | Python ProtocolState | 代数效应 TypeScript |
 |---------------------|-------------------|
 | `ProtocolState(request_id, type, sender, target, status, payload)` | `pendingRequests` Map + `ProtocolState` 接口（`status: pending\|approved\|rejected`） |
-| `match_response(response_type, request_id, approve)` | `matchResponse()` — 校验 request_id + 响应类型 → 置 approved/rejected |
+| `match_response(response_type, request_id, approve)` | `settleResponse(responseType, requestId, approve)` — 校验 request_id + 响应类型 → 置 approved/rejected |
 | `pending_requests: dict[str, ProtocolState]` | `pendingRequests: Map<string, ProtocolState>` |
 | `BUS.send(..., metadata={request_id})` | `SendMessage` Effect 携带 `metadata.request_id`（真实 JSONL 信箱） |
 | Teammate idle loop | `teammateLoop` generator + `Idle` Effect 真轮询信箱 |
@@ -75,14 +85,14 @@ interface ProtocolState {
   sender: string;
   target: string;
   status: 'pending' | 'approved' | 'rejected';
-  payload: string;       // plan goal 或 shutdown reason
+  payload: string;       // 计划文本或 shutdown reason
   createdAt: number;
 }
 
 const pendingRequests = new Map<string, ProtocolState>();
 ```
 
-`RequestPlan` / `RequestShutdown` 写入 `pendingRequests`（status=pending），响应到达后由 `matchResponse` 校验并落定。这确保：
+`SubmitPlan` / `RequestShutdown` 写入 `pendingRequests`（status=pending），响应到达后由 `settleResponse` 校验并落定。这确保：
 
 1. 不能审查/确认一个不存在的请求（未知 `request_id`）
 2. 不能重复处理同一请求（status 已非 pending）
@@ -90,60 +100,81 @@ const pendingRequests = new Map<string, ProtocolState>();
 
 ### request_id 由 Handler 生成、经消息真实传递
 
-```typescript
-// RequestPlan handler：由 Handler 生成 request_id（不由 LLM 决定）
-const requestId = newRequestId('plan');          // 例如 plan_182681_1
-pendingRequests.set(requestId, { type: 'plan_approval', status: 'pending', ... });
-await BUS.send('main', 'reviewer', goal, 'plan_request', { request_id: requestId });
-// ↑ 追加写 .mailboxes/reviewer.jsonl
+计划审批的 request_id 由**队友侧**的 `SubmitPlan` Handler 生成：
 
-// 队友侧：从收到的 inbox 消息里【真实提取】request_id，再用它调用 review_plan
-const requestId = findRequestId(messages);       // 解析注入的 <inbox> JSON
+```typescript
+// 队友侧 SubmitPlan handler：由 Handler 生成 request_id（不由 LLM 决定）
+const requestId = newRequestId('plan');          // 例如 plan_182681_1
+pendingRequests.set(requestId, {
+  type: 'plan_approval', sender: 'planner', target: 'main', status: 'pending', payload: plan, ...
+});
+await BUS.send('planner', 'main', plan, 'plan_approval_request', { request_id: requestId });
+// ↑ 追加写 .mailboxes/s16/main.jsonl
+
+// Lead 侧 RequestPlan：从 plan_approval_request 的 metadata 里读取同一个 request_id，
+// 通过工具结果交给模型，再由模型调用 review_plan
+const requestId = String(msg.metadata['request_id']);
 ```
 
-### matchResponse：请求-响应关联（双校验）
+关闭请求的 `request_id` 则由 Lead 的 `RequestShutdown` Handler 生成。
+
+计划请求本身也有一个父 `request_id`：`RequestPlan` 发 `plan_request` 时带上它，队友的 `SubmitPlan` 把它回填到 `plan_approval_request.metadata.parent_request_id`；`RequestPlan` 只接受与本次父请求匹配的计划，迟到的旧计划会被拒绝，避免把上一次的提交当成当前请求的计划。
+
+### settleResponse：请求-响应关联（双校验）
 
 ```typescript
-function matchResponse(responseType: string, requestId: string, approve: boolean) {
+function settleResponse(responseType: string, requestId: string, approve: boolean): void {
   const state = pendingRequests.get(requestId);
-  if (!state) return log('unknown request_id');                    // 孤立响应 → 拒绝
-  if (responseType !== expectedResponseType(state.type))
-    return log('type mismatch');                                   // 类型不匹配 → 拒绝
-  if (state.status !== 'pending')
-    return log('already ..., ignoring duplicate');                 // 重复响应 → 忽略
+  if (!state) { log('unknown request_id'); return; }               // 孤立响应 → 拒绝
+  if (responseType !== expectedResponseType(state.type)) {
+    log('type mismatch'); return;                                  // 类型不匹配 → 拒绝
+  }
+  if (state.status !== 'pending') {
+    log('already ..., ignoring duplicate'); return;                // 重复响应 → 忽略
+  }
   state.status = approve ? 'approved' : 'rejected';                // 通过 → 落定
 }
 ```
 
-未知、错类型、重复的响应都会被**记录并拒绝**，不会被静默接受（入口处有负向自检演示这三条分支）。
+未知、错类型、重复的响应都会被**记录并拒绝**，不会被静默接受。调用方以 `pendingRequests` 里的状态为准，不直接采用重复响应的内容。
 
 ### 协议状态流转
 
 ```
 Lead: request_plan(goal)
-  → pendingRequests[req_id] = { type: 'plan_approval', status: 'pending' }
-  → BUS.send(plan_request, metadata={request_id}) ──→ reviewer 信箱
+  → BUS.send(plan_request, 普通提示) ──→ planner 信箱
 
-Reviewer: 读信箱 → 真实 Chat 回合生成计划 → review_plan(request_id, reviewerId)
-  → 校验 request_id 存在且 pending → 按计划步骤数判定
-  → BUS.send(plan_approval_response, metadata={request_id, approve}) ──→ Lead 信箱
+Planner: 读信箱 → 真实 Chat 回合生成计划 → submit_plan(plan)
+  → SubmitPlan 注册 pendingRequests[req_id] =
+      { type: 'plan_approval', sender: planner, target: main, payload: plan }
+  → BUS.send(plan_approval_request, body=plan, metadata={request_id}) ──→ Lead 信箱
+  → SubmitPlan 最多等一段时间，直到收到同 request_id 的 plan_approval_response
 
-Lead: 有界轮询信箱 → 命中同 request_id 的响应 → matchResponse
-  → status: pending → approved / rejected   （approved 才继续执行）
+Lead: request_plan 命中 plan_approval_request → 返回 pending Plan
+  （request_plan 已消费该消息；下一步直接调用 review_plan）
+  → review_plan(request_id, reviewerId=main)
+  → ReviewPlan 校验 pending → 按 pending.payload 的步骤数判定
+  → BUS.send(plan_approval_response, body=feedback, metadata={request_id, approve}) ──→ planner 信箱
+  → settleResponse('plan_approval_response', req_id, approved)
+  （发送失败则保持 pending，由等待方超时兜底）
+
+Planner: SubmitPlan 收到响应 → 按已落定状态继续/停止
 
 Lead: request_shutdown(agentId) → pending … 等待 shutdown_response
-  → teammate 读信箱 → BUS.send(shutdown_response, metadata={request_id}) → 停止子循环
-  → Lead 命中响应 → matchResponse → status: pending → approved
+  → planner 读信箱 → BUS.send(shutdown_response, metadata={request_id}) → 停止子循环
+  → Lead 命中响应 → settleResponse → status: pending → approved
 ```
 
-任何一步响应缺席都会**在限定次数内反复查看，最终超时**（`pollForResponse`），返回 rejected / acknowledged=false，而不是伪造成功。
+如果 `review_plan` 判定拒绝，这一轮协议以 `rejected` 结束；Lead 可以再次 `request_plan`，队友用新的 `parent_request_id` 提交修订计划，产生新的 `request_id` 并重新走审批。演示里第一次提交 2 步被拒，第二次提交 5 步获批。
+
+任何一步响应缺席都会**在限定时间内反复查看，最终超时**：`RequestPlan` 返回 rejected（不注册 pending）；`SubmitPlan` 把仍 pending 的计划请求落为 rejected；`RequestShutdown` 把仍 pending 的关闭请求落为 rejected 并返回 acknowledged=false，而不是伪造成功。如果目标队友已经退出，`RequestPlan` / `RequestShutdown` 会立即返回失败，不会等满超时。
 
 ### 真实队友子循环
 
-审查队友不是"调用时就返回预设固定回复"的定时器，而是一个独立的 `generator + runAgent` 子循环（复用 s15 模式）：
+计划队友不是"调用时就返回预设固定回复"的定时器，而是一个独立的 `generator + runAgent` 子循环（复用 s15 模式）：
 
-- 空闲时 `Idle` 真等待 / 轮询自己的 `.mailboxes/reviewer.jsonl`
-- 收到 `plan_request` → 注入历史 → 一次真实 Chat 回合 → 调用 `review_plan` 工具
+- 空闲时 `Idle` 等待 `BUS.waitForMessage`：信箱有新消息立即返回，超时后继续轮询
+- 收到 `plan_request` → 注入历史 → 真实 Chat 回合（工具结果会继续送回模型）→ 调用 `submit_plan`（完整计划写进 `plan` 参数；`SubmitPlan` 阻塞等待 Lead 的 `plan_approval_response`）→ 批准后继续；被拒绝则回到空闲，等待下一次 `plan_request` 提交修订计划
 - 收到 `shutdown_request` → 回 `shutdown_response`（带同一 request_id）后退出
 
 Mock 只替换**模型调用**：协议状态机、信箱 I/O、request_id 关联全部是真实代码。
@@ -156,35 +187,37 @@ Mock 只替换**模型调用**：协议状态机、信箱 I/O、request_id 关�
 |------|-----------|-----------|
 | 协作模式 | 信箱消息传递 | 信箱 + 有状态协议状态机 |
 | 请求追踪 | 无 | `ProtocolState` + `pendingRequests` Map |
-| 关联机制 | 无 | `request_id` + `matchResponse(responseType, requestId)` 双校验 |
-| 审批流程 | 无 | `request_plan` → 队友 `review_plan` 响应（真实判定，不是恒批准） |
+| 关联机制 | 无 | `request_id` + `settleResponse(responseType, requestId, approve)` 双校验 |
+| 协议工具 | 无 | Lead：`request_plan` / `review_plan` / `request_shutdown`；队友：`submit_plan` |
+| 审批流程 | 无 | 队友 `submit_plan` 提交 → Lead `review_plan` 审批（真实判定，不是恒批准；演示里首次 2 步被拒，补充到 5 步后批准） |
 | 关闭流程 | 无 | `request_shutdown` 注册 pending → 等 `shutdown_response`（不预兑现） |
-| 计划内容 | 无 | 由队友 Chat 回合产出，经 `plan_approval_response` 消息回流 |
-| 队友生命周期 | 最多 10 轮后退出 | 空闲轮询信箱，收到协议消息再工作/退出 |
+| 计划内容 | 无 | 由队友 Chat 回合产出，经 `plan_approval_request` 送到 Lead，Lead 审批后回 `plan_approval_response` |
+| 队友生命周期 | 最多 10 轮后退出 | 空闲轮询信箱，收到协议消息再工作/退出；工作轮仍有 10 轮上限 |
+| 信箱目录 | `.mailboxes/s15/*.jsonl` | `.mailboxes/s16/*.jsonl`（启动只清空本章目录） |
+| 真实模式等待 | 无协议等待（收尾 join 90s） | 按模式区分：mock 15s；real 空闲 10min、协议响应 5min |
 
 ---
 
 ## 运行
 
 ```bash
-# 默认离线（mock 只替换模型调用；协议/信箱全是真实代码）
+# mock 模式（显式设置，避免 .env 里的 AGENT_MODE=real 影响；只替换模型调用，协议/信箱全是真实代码）
 AGENT_MODE=mock npx tsx s16_team_protocols/agent.ts
-# 真实模型
+# 真实模型（--real，或 .env 里 AGENT_MODE=real）
 npx tsx s16_team_protocols/agent.ts --real
 ```
+
+说明：本章的信箱落在 `.mailboxes/s16/`，启动时只清空这个子目录。real 模式下队友空闲等待默认 10 分钟、协议响应默认 5 分钟，可用 `S16_IDLE_TIMEOUT_MS` / `S16_RESPONSE_TIMEOUT_MS` 覆盖；单轮输出默认 4096 tokens，可用 `S16_MAX_TOKENS` 调整。lead 的 `check_inbox` 默认先等活跃队友最多 500ms，可用 `waitMs` 覆盖。lead 结束后，宿主会通知仍在空闲等待的队友停止，最多再等 `S16_CLEANUP_WAIT_MS`（mock 1 秒 / real 3 秒）；如果队友正在一次模型请求里，进程可能还要等它完成。队友异常时会向 lead 的信箱写一条 `[teammate error]` result，并把该队友记入失败集合，最终退出码为 1；如果目标已经退出，`request_plan` / `request_shutdown` 会立即返回失败，不会等满超时。
 
 Mock 输出末尾：
 
 ```
 [Protocol] 协议请求汇总:
-  plan_xxx: type=plan_approval main→reviewer [approved]
-  shutdown_xxx: type=shutdown main→reviewer [approved]
+  plan_xxx: type=plan_approval planner→main [rejected]
+  plan_yyy: type=plan_approval planner→main [approved]
+  shutdown_zzz: type=shutdown main→planner [approved]
 
-[Protocol] 负向自检 (match_response 拒绝孤立/错类型/重复响应):
-  [protocol] unknown request_id: req_does_not_exist
-  [protocol] type mismatch: expected shutdown_response, got plan_approval_response
-  [protocol] shutdown ✗ (req_probe: rejected)
-  [protocol] req_probe already rejected, ignoring duplicate
+[S16] 协议演示结果: 协议流程演示完成：请求计划 → 队友提交 → Lead 拒绝 → 重新提交 → Lead 审批 → 执行 → 关闭确认。
 [S16] 完成
 ```
 
@@ -192,7 +225,7 @@ Mock 输出末尾：
 
 ## 本章小结
 
-**协议 = Effect 序列约束 + 请求-响应关联。`ProtocolState` 追踪每个请求的生命周期（pending→approved/rejected），`matchResponse(responseType, requestId)` 同时校验响应类型与请求 ID，确保审查不能孤立存在。计划内容由队友的真实 Chat 回合产出并经信箱回流，关闭请求在收到匹配响应前始终保持 pending——协议把 Agent 协作从"自由消息传递"升级为"有状态工作流"。**
+**协议 = Effect 序列约束 + 请求-响应关联。`ProtocolState` 追踪每个请求的生命周期（pending→approved/rejected），`settleResponse(responseType, requestId, approve)` 同时校验响应类型与请求 ID，确保审查不能孤立存在。计划内容由队友的真实 Chat 回合产出，经 `plan_approval_request` 送到 Lead；Lead 的 `review_plan` 先回发 `plan_approval_response`，发送成功后再落定；`submit_plan` 等到匹配响应才继续。拒绝也是一次完整的落定：演示里第一次 2 步计划被拒，Lead 重新请求后队友提交 5 步计划才获批。关闭请求在收到匹配响应前始终保持 pending——协议把 Agent 协作从"自由消息传递"升级为"有状态工作流"。**
 
 ---
 
@@ -224,17 +257,17 @@ CC 的 `dispatch.ts` 负责将协议消息路由到正确的 Agent：
 - `ReviewPlan` → 路由到 `reviewer` Agent（可以是人类或另一个 Agent）
 - `RequestShutdown` → 路由到 `coordinator`，由 coordinator 决定是否 acknowledged
 
-教学版的 `request_plan` / `request_shutdown` 把目标写为队友的 mailbox id（本仓 `spawn_teammate` schema 只有 `agentId/role`，无独立 target 字段），消息经真实 `.mailboxes/*.jsonl` 投递，由队友子循环读取。
+教学版的 `request_plan` / `request_shutdown` 把目标写为队友的 mailbox id（本仓 `spawn_teammate` schema 只有 `agentId/role`，无独立 target 字段），消息经真实 `.mailboxes/s16/*.jsonl` 投递，由队友子循环读取。
 
 ### 三、requestId 生成策略
 
 CC 的 `requestId` 不由 LLM 生成（LLM 生成容易冲突或被篡改），而是由 Handler 在注册时生成（`uuid4()`），再通过消息元数据传给对端；对端调用响应工具时带上该 id。
 
-教学版与之一致：`RequestPlan` / `RequestShutdown` 的 Handler 用 `newRequestId()` 生成 id，写入 `metadata.request_id`；队友从收到的 inbox 消息里真实提取该 id 再调用 `review_plan`。
+教学版与之一致：计划审批的 id 由队友的 `SubmitPlan` Handler 用 `newRequestId()` 生成，写入 `metadata.request_id` 随 `plan_approval_request` 发给 Lead；Lead 的 `ReviewPlan` 用该 id 回发 `plan_approval_response`。关闭请求的 id 由 Lead 的 `RequestShutdown` Handler 生成。
 
 ### 四、协议消息类型
 
-CC 支持约 15 种协议消息类型，远超教学版的 4 种（`plan_request` / `plan_approval_response` / `shutdown_request` / `shutdown_response`）：
+CC 支持约 15 种协议消息类型，远超教学版的 4 种协议消息（`plan_approval_request` / `plan_approval_response` / `shutdown_request` / `shutdown_response`；`plan_request` 只是普通提示消息）：
 
 | 类型 | 用途 |
 |------|------|
@@ -253,8 +286,8 @@ CC 支持约 15 种协议消息类型，远超教学版的 4 种（`plan_request
 |--------|--------|-----|
 | execute 检查关 | 无（信任 Generator 顺序） | `execute_gate` 拦截未授权执行 |
 | dispatch 路由 | 单进程内共享 `pendingRequests` + 真实 mailbox 投递 | 真实跨进程消息路由 |
-| requestId 生成 | Handler 生成（与 CC 一致） | Handler 生成，返回给 LLM |
+| requestId 生成 | 队友 `SubmitPlan` / Lead `RequestShutdown` 的 Handler 生成 | Handler 生成，返回给 LLM |
 | 协议类型数 | 4 | 约 15 种 |
-| 超时处理 | 在限定次数内反复查看直到超时 → rejected / acknowledged=false | 待处理超过时限自动 rejected |
+| 超时处理 | 在限定时间内反复查看直到超时 → rejected / acknowledged=false | 待处理超过时限自动 rejected |
 
 </details>
