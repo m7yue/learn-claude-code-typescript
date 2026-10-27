@@ -169,12 +169,12 @@ export const TOOL_SPECS: Record<string, ToolSchema> = {
     "读取并清空自己的收件箱。",
     {
       expectType: str("（可选，s20）一直等到这个类型的消息到达再返回"),
-      waitMs: int("（可选，s20）等待上限（毫秒）"),
+      waitMs: int("（可选，s20）等待上限（毫秒）：expectType 时等到该类型，否则 lead 收信前最多等待这么久"),
     },
   ),
   request_plan: schema(
     "request_plan",
-    "请求计划审批。",
+    "请求计划审批。只投递请求；随后用 check_inbox(expectType=\"plan_approval_request\") 等待，并从返回消息的 metadata.request_id 取 requestId，再调用 review_plan。",
     {
       goal: str("计划目标"),
       requestId: str("（可选）请求 ID"),

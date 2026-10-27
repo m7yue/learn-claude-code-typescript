@@ -27,6 +27,16 @@ import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import { classifyError } from '../runtime/errors.ts';
 import { loadEnvOnce, resolveMode } from '../runtime/env.ts';
+import {
+  CONTINUATION_PROMPT,
+  DEFAULT_MAX_TOKENS,
+  MAX_RETRIES,
+  REACTIVE_COMPACT_PROMPT,
+  RecoveryState,
+  configuredFallbackModel,
+  readRetryAfterMs,
+  retryDelayMs,
+} from '../runtime/recovery.ts';
 
 // ============================================================
 // Part 1: Effect 类型定义
@@ -54,85 +64,18 @@ loadEnvOnce();
 
 /** MODEL_ID 缺失时（离线 mock）使用的模型名。 */
 const DEFAULT_MODEL = 'claude-opus-4-5';
-/** mock 模式的演示备用模型：让「连续 529 → SwitchModel」这条路径离线也能走到。 */
-const MOCK_FALLBACK_MODEL = 'claude-haiku-4-5';
-
-/** 首次请求的输出上限。 */
-const DEFAULT_MAX_TOKENS = 8000;
-/** 遇到 max_tokens 截断后升级到的输出上限。 */
-const ESCALATED_MAX_TOKENS = 64000;
-/** max_tokens 截断后最多续接几次；用满即结束本轮。 */
-const MAX_RECOVERY_RETRIES = 3;
-/** 同一次模型调用最多尝试几次（含首次）；429/529 的重试也受它限制。 */
-const MAX_RETRIES = 10;
-/** 连续这么多次 529 过载就切换备用模型；未配置 FALLBACK_MODEL_ID 时只打印日志、继续重试。 */
-const MAX_CONSECUTIVE_529 = 3;
-/** 退避起点时长。 */
-const BASE_DELAY_MS = 500;
-/** 退避时长上限：按 2 的幂增长到它就不再涨。 */
-const MAX_BACKOFF_MS = 32000;
-
-/** 截断续接提示：贴回被截断的输出后发给模型，要求直接接着写、不要道歉或复述。 */
-const CONTINUATION_PROMPT =
-  'Output token limit hit. Resume directly — no apology, no recap. Pick up mid-thought.';
-
-/** 应急压缩后插入的合成 user 消息：告诉模型上文已被裁掉，从当前进度继续。 */
-const REACTIVE_COMPACT_PROMPT =
-  '[Reactive compact] Earlier conversation trimmed. Continue from where you left off.';
 
 // 主模型：real 模式取 MODEL_ID；mock 无 .env 时退回默认值，保证离线可跑。
 const PRIMARY_MODEL = (process.env.MODEL_ID || '').trim() || DEFAULT_MODEL;
 
-// 备用模型：严格读取 FALLBACK_MODEL_ID。mock 模式若未配置，给一个演示默认值，
-// 否则「连续 529 → SwitchModel」这条路径在离线演示中不可达。
-// real 模式不注入默认值：未配置时继续重试并打印日志。
-function configuredFallbackModel(): string {
-  const fromEnv = (process.env.FALLBACK_MODEL_ID || '').trim();
-  if (fromEnv) return fromEnv;
-  return resolveMode() === 'mock' ? MOCK_FALLBACK_MODEL : '';
-}
+// 备用模型：严格读取 FALLBACK_MODEL_ID；mock 未配置时给一个演示默认值。
 const FALLBACK_MODEL = configuredFallbackModel();
-
-// mock 模式下把退避时长压缩一个量级，让整轮演示 <3s；真实公式与上限不变。
-const MOCK_DELAY_SCALE = 0.01;
-
-/** 跨轮次保存的恢复状态：三条恢复路径各自的进度都存在这里。 */
-class RecoveryState {
-  /** 是否已升级过 token 上限（每次运行只升级一次，之后不再复位）。 */
-  hasEscalated = false;
-  /** max_tokens 已续接的次数，与 MAX_RECOVERY_RETRIES 比较。 */
-  recoveryCount = 0;
-  /** 连续 529 过载的次数；请求成功一次就清零。 */
-  consecutive529 = 0;
-  /** 是否已应急压缩过（Path 2 只压缩一次）。 */
-  hasAttemptedReactiveCompact = false;
-  /** 当前使用的模型；连续 529 触发 SwitchModel 后换成备用模型。 */
-  currentModel = PRIMARY_MODEL;
-}
-
-/** 指数退避 + 随机延时；Retry-After（服务端指定的等待时间）优先。 */
-function retryDelayMs(attempt: number, retryAfterMs?: number): number {
-  if (retryAfterMs) return retryAfterMs;
-  const baseMs = Math.min(BASE_DELAY_MS * Math.pow(2, attempt), MAX_BACKOFF_MS);
-  const jitter = Math.random() * baseMs * 0.25;
-  const full = baseMs + jitter;
-  return Math.round(resolveMode() === 'mock' ? full * MOCK_DELAY_SCALE : full);
-}
 
 /** 应急压缩：教学版保留最近 5 条消息，前面插入一条合成 user 消息。 */
 function reactiveCompact(messages: Message[]): Message[] {
   console.log('  [reactive compact] 保留最近 5 条消息');
   const tail = messages.slice(-5);
   return [{ role: 'user', content: REACTIVE_COMPACT_PROMPT }, ...tail];
-}
-
-/** 提取错误携带的 retryAfterMs（若 provider 提供）。 */
-function readRetryAfterMs(error: unknown): number | undefined {
-  if (error && typeof error === 'object') {
-    const value = (error as { retryAfterMs?: unknown }).retryAfterMs;
-    if (typeof value === 'number') return value;
-  }
-  return undefined;
 }
 
 function errorName(error: unknown): string {
@@ -258,7 +201,7 @@ function* agentLoop(perform: PerformFn<S11Effect>) {
     { role: 'user', content: '执行一个命令，即使遇到错误也要坚持完成。' },
   ];
 
-  const state = new RecoveryState();
+  const state = new RecoveryState({ primaryModel: PRIMARY_MODEL });
   // 本次请求发出的输出上限：被截断时升级，之后的请求都带着升级后的值。
   let maxTokens = DEFAULT_MAX_TOKENS;
 
@@ -274,7 +217,7 @@ function* agentLoop(perform: PerformFn<S11Effect>) {
             type: 'Chat',
             input: { messages, model: state.currentModel, maxTokens },
           });
-          state.consecutive529 = 0; // 成功即重置
+          state.onSuccess(); // 成功即重置
           break;
         } catch (error: unknown) {
           const kind = classifyError(error);
@@ -290,18 +233,17 @@ function* agentLoop(perform: PerformFn<S11Effect>) {
 
           // Path 3b: 529 过载 → 指数退避 + 连续超限切换备用模型
           if (kind === 'overloaded') {
-            state.consecutive529 += 1;
-            if (state.consecutive529 >= MAX_CONSECUTIVE_529) {
-              if (FALLBACK_MODEL) {
-                state.currentModel = yield* perform({
-                  type: 'SwitchModel',
-                  input: { reason: `连续 ${MAX_CONSECUTIVE_529} 次 529 过载`, fromModel: state.currentModel },
-                });
-                state.consecutive529 = 0;
-              } else {
-                state.consecutive529 = 0;
-                console.log(`  [529 x${MAX_CONSECUTIVE_529}] 未配置 FALLBACK_MODEL_ID，继续重试`);
-              }
+            const decision = state.onOverloaded(Boolean(FALLBACK_MODEL));
+            if (decision.action === 'switch-model') {
+              state.currentModel = yield* perform({
+                type: 'SwitchModel',
+                input: {
+                  reason: `连续 ${state.maxConsecutive529} 次 529 过载`,
+                  fromModel: state.currentModel,
+                },
+              });
+            } else if (decision.action === 'retry-no-fallback') {
+              console.log(`  [529 x${state.maxConsecutive529}] 未配置 FALLBACK_MODEL_ID，继续重试`);
             }
             yield* perform({
               type: 'RetryWithBackoff',
@@ -355,19 +297,18 @@ function* agentLoop(perform: PerformFn<S11Effect>) {
 
     // ── Path 1: max_tokens → 升级或续接 ──
     if (response.stop_reason === 'max_tokens') {
+      const decision = state.onMaxTokens();
       // 首次：只升级 token 上限，不追加被截断的输出，重试同一请求
-      if (!state.hasEscalated) {
-        maxTokens = ESCALATED_MAX_TOKENS;
-        state.hasEscalated = true;
-        console.log(`  [max_tokens] 升级 ${DEFAULT_MAX_TOKENS} -> ${ESCALATED_MAX_TOKENS}`);
+      if (decision.action === 'escalate') {
+        maxTokens = state.maxTokens;
+        console.log(`  [max_tokens] 升级 ${DEFAULT_MAX_TOKENS} -> ${state.escalatedMaxTokens}`);
         continue;
       }
-      // 升级后仍被截断：保存截断输出 + 续接提示（最多 MAX_RECOVERY_RETRIES 次）
+      // 升级后仍被截断：保存截断输出 + 续接提示（最多 maxRecoveryRetries 次）
       messages.push({ role: 'assistant', content: response.content });
-      if (state.recoveryCount < MAX_RECOVERY_RETRIES) {
+      if (decision.action === 'continue') {
         messages.push({ role: 'user', content: CONTINUATION_PROMPT });
-        state.recoveryCount += 1;
-        console.log(`  [max_tokens] 续接 ${state.recoveryCount}/${MAX_RECOVERY_RETRIES}`);
+        console.log(`  [max_tokens] 续接 ${state.recoveryCount}/${state.maxRecoveryRetries}`);
         continue;
       }
       console.log('  [max_tokens] 达到恢复上限');

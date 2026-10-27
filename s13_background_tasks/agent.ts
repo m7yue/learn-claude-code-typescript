@@ -66,6 +66,7 @@ import { callChat } from '../runtime/model.ts';
 import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import { TASKS_DIR, TASK_OUTPUTS_DIR, WORKSPACE_ROOT } from '../runtime/workspace.ts';
+import { BackgroundRegistry } from '../runtime/background.ts';
 
 // ============================================================
 // Part 1: Effect 类型定义
@@ -264,148 +265,25 @@ async function executeTool(block: ToolUseBlock): Promise<string> {
   }
 }
 
-/** 转义 XML 文本节点，避免输出里的 & / < / > 破坏通知。 */
-function escapeXml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+// ============================================================
+// Part 3: 后台任务注册表（实现来自 runtime/background.ts）
+// ============================================================
 
-/** 把后台任务的完整输出写到工作区；写失败只记日志，不影响任务状态。 */
-function writeBackgroundOutput(bgId: string, output: string): string | undefined {
-  try {
-    fs.mkdirSync(TASK_OUTPUTS_DIR, { recursive: true });
-    const file = path.join(TASK_OUTPUTS_DIR, `${bgId}.log`);
-    fs.writeFileSync(file, output, 'utf8');
-    return file;
-  } catch (e) {
+const backgroundRegistry = new BackgroundRegistry({
+  executor: executeTool,
+  outputDir: TASK_OUTPUTS_DIR,
+  log: (event, bgId, task, output) => {
+    if (event === 'start') {
+      console.log(`  [background] dispatched ${bgId}: ${task.command.slice(0, 40)}`);
+      return;
+    }
+    const durationMs = task.finishedAt !== undefined ? task.finishedAt - task.startedAt : 0;
+    const label = event === 'done' ? 'done' : 'failed';
     console.log(
-      `  [background output error] ${bgId}: ${e instanceof Error ? e.message : String(e)}`,
+      `  [background ${label}] ${bgId}: ${task.command.slice(0, 40)} (+${durationMs}ms, ${output.length} chars)`,
     );
-    return undefined;
-  }
-}
-
-// ============================================================
-// Part 3: 后台任务注册表（真实机制）
-// ============================================================
-
-interface BackgroundTaskRecord {
-  toolUseId: string;
-  command: string;
-  status: 'running' | 'completed' | 'failed';
-  startedAt: number;
-  finishedAt?: number;
-  /** 完整输出的文件路径；写文件失败时为空。 */
-  outputFile?: string;
-}
-
-/**
- * 后台任务注册表 —— 用两张 Map 分别保存后台任务的记录与结果。
- *
- * startBackgroundTask 会启动一个「不等它结束」的 async 任务：调用方拿到 bg id 后
- * 主循环立刻继续，后台那段代码稍后才把结果写回。
- */
-class BackgroundRegistry {
-  private counter = 0; // 自增计数，用于 bg_0001、bg_0002 这样的命名
-  private readonly backgroundTasks = new Map<string, BackgroundTaskRecord>();
-  private readonly backgroundResults = new Map<string, string>();
-  private readonly pending = new Set<Promise<void>>(); // 尚未结束的后台任务，waitForAll 用
-
-  /** 启动一个后台任务，立即返回 bg id。 */
-  async startBackgroundTask(block: ToolUseBlock): Promise<string> {
-    this.counter += 1;
-    const bgId = `bg_${String(this.counter).padStart(4, '0')}`;
-    const command =
-      typeof block.input['command'] === 'string' ? block.input['command'] : block.name;
-
-    const task: BackgroundTaskRecord = {
-      toolUseId: block.id,
-      command,
-      status: 'running',
-      startedAt: Date.now(),
-    };
-    this.backgroundTasks.set(bgId, task);
-
-    // 不等它：主循环拿到 bgId 后立刻继续，后台那段代码稍后自己把结果写回来。
-    const job = (async () => {
-      try {
-        const output = await executeTool(block);
-        this.backgroundResults.set(bgId, output);
-        task.outputFile = writeBackgroundOutput(bgId, output);
-        task.status = 'completed';
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const output = `Error: ${message}`;
-        this.backgroundResults.set(bgId, output);
-        task.outputFile = writeBackgroundOutput(bgId, output);
-        task.status = 'failed';
-        console.log(`  [background failed] ${bgId}: ${message}`);
-      } finally {
-        task.finishedAt = Date.now();
-      }
-    })();
-    this.pending.add(job);
-    // 无论成功失败都从 pending 移除；job 内部已处理异常，这里只做清理。
-    void job.then(
-      () => this.pending.delete(job),
-      () => this.pending.delete(job),
-    );
-
-    console.log(`  [background] dispatched ${bgId}: ${command.slice(0, 40)}`);
-    return bgId;
-  }
-
-  /** 等完在途任务；超时后放弃剩余任务，避免结束回合时无限等待。 */
-  async waitForAll(timeoutMs = 5_000): Promise<void> {
-    if (this.pending.size === 0) return;
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, timeoutMs);
-    });
-    try {
-      await Promise.race([Promise.allSettled([...this.pending]), timeout]);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
-  }
-
-  /** 收集已结束（completed/failed）的任务，返回 <task-notification> 文本。 */
-  async collectBackgroundResults(): Promise<string[]> {
-    const readyIds = [...this.backgroundTasks.entries()]
-      .filter(([, task]) => task.status !== 'running')
-      .map(([bgId]) => bgId);
-
-    const notifications: string[] = [];
-    for (const bgId of readyIds) {
-      const task = this.backgroundTasks.get(bgId)!;
-      const output = this.backgroundResults.get(bgId) ?? '';
-      this.backgroundTasks.delete(bgId);
-      this.backgroundResults.delete(bgId);
-
-      const summary = output.length > 200 ? output.slice(0, 200) : output;
-      const durationMs = task.finishedAt !== undefined ? task.finishedAt - task.startedAt : 0;
-      const outputFile = task.outputFile
-        ? `  <output-file>${escapeXml(task.outputFile)}</output-file>\n`
-        : '';
-      notifications.push(
-        `<task-notification>\n` +
-          `  <task-id>${bgId}</task-id>\n` +
-          `  <task-type>local_bash</task-type>\n` +
-          `  <status>${task.status}</status>\n` +
-          `  <summary>${escapeXml(summary)}</summary>\n` +
-          outputFile +
-          `</task-notification>`,
-      );
-      const label = task.status === 'completed' ? 'done' : 'failed';
-      console.log(
-        `  [background ${label}] ${bgId}: ${task.command.slice(0, 40)} (+${durationMs}ms, ${output.length} chars)`,
-      );
-    }
-    return notifications;
-  }
-}
-
-const backgroundRegistry = new BackgroundRegistry();
+  },
+});
 
 // ============================================================
 // Part 4: 后台判定（慢命令启发式 + 显式请求）
@@ -547,7 +425,7 @@ const s13Handlers = {
   // 后台启动：注册表启动一个「不等它结束」的 async 函数，立即返回 bg id
   StartBackground: async (effect: StartBackgroundEffect): Promise<{ bgId: string }> => {
     console.log(`> ${effect.input.block.name}`);
-    const bgId = await backgroundRegistry.startBackgroundTask(effect.input.block);
+    const bgId = backgroundRegistry.start(effect.input.block);
     return { bgId };
   },
 
@@ -555,8 +433,7 @@ const s13Handlers = {
   CollectBackgroundResults: async (
     effect: CollectBackgroundResultsEffect,
   ): Promise<string[]> => {
-    if (effect.input.wait) await backgroundRegistry.waitForAll();
-    return backgroundRegistry.collectBackgroundResults();
+    return backgroundRegistry.collect(effect.input.wait ?? false);
   },
 };
 

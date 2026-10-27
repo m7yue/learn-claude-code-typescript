@@ -38,6 +38,8 @@ import { schemasFor } from '../runtime/tool-schemas.ts';
 import { buildSystemPrompt } from '../runtime/system-prompt.ts';
 import { Mutex } from '../runtime/locks.ts';
 import { SCHEDULED_TASKS_PATH } from '../runtime/workspace.ts';
+import { cronMatches, validateCron } from '../runtime/cron.ts';
+import type { CronJob } from '../runtime/cron.ts';
 import * as fs from 'node:fs';
 
 // ============================================================
@@ -48,14 +50,7 @@ import * as fs from 'node:fs';
 interface ChatEffect extends Effect<'Chat', { messages: Message[] }, LLMResponse> {}
 
 // ── Cron 记录 ──
-// 只保留调度真正需要的字段：运行次数、上次触发时间不参与调度，不存储。
-interface CronJob {
-  id: string;
-  cron: string;        // "分 时 日 月 周" 5 字段 cron 表达式
-  prompt: string;      // 触发时注入 Agent 的描述
-  recurring: boolean;  // false = 触发一次后自动注销
-  durable: boolean;    // true = 持久化到磁盘（重启后保留）
-}
+// 字段定义与解析、校验逻辑在 runtime/cron.ts，s14/s20 共用同一份实现。
 
 interface ScheduleCronEffect
   extends Effect<
@@ -72,119 +67,7 @@ interface CancelCronEffect
 type S14Effect = ChatEffect | ScheduleCronEffect | ListCronsEffect | CancelCronEffect;
 
 // ============================================================
-// Part 2: cron 表达式解析与校验
-// ============================================================
-
-// 各字段的合法取值范围：minute hour day-of-month month day-of-week。
-// 解析和校验共用这张表，边界只写一次。
-const CRON_FIELDS = [
-  { name: 'minute', min: 0, max: 59 },
-  { name: 'hour', min: 0, max: 23 },
-  { name: 'day-of-month', min: 1, max: 31 },
-  { name: 'month', min: 1, max: 12 },
-  { name: 'day-of-week', min: 0, max: 6 },
-] as const;
-
-// 解析单个字段，返回它包含的所有值；表达式非法时返回错误字符串。
-// 匹配和校验都调用它，同一套语法只定义一次。
-//
-// 支持 * | N | */N | N-M | N,M：
-//   *       → min..max
-//   */N     → 从 min 开始，每隔 N 取一个
-//   N-M     → N..M
-//   N       → 单个值
-//   逗号    → 各部分的并集
-//
-// 步长从字段最小值起算：日/月的最小值是 1，所以 */2 表示 1,3,5...
-function parseCronField(field: string, min: number, max: number): Set<number> | string {
-  const values = new Set<number>();
-
-  for (const rawPart of field.split(',')) {
-    const part = rawPart.trim();
-    let lo: number;
-    let hi: number;
-    let step = 1;
-
-    if (part === '*') {
-      lo = min;
-      hi = max;
-    } else if (part.startsWith('*/')) {
-      const stepText = part.slice(2);
-      if (!/^\d+$/.test(stepText)) return `Invalid step: ${part}`;
-      step = Number(stepText);
-      if (step <= 0) return `Step must be > 0: ${part}`;
-      lo = min;
-      hi = max;
-    } else if (part.includes('-')) {
-      const idx = part.indexOf('-');
-      const loText = part.slice(0, idx);
-      const hiText = part.slice(idx + 1);
-      if (!/^\d+$/.test(loText) || !/^\d+$/.test(hiText)) return `Invalid range: ${part}`;
-      lo = Number(loText);
-      hi = Number(hiText);
-      if (lo < min || lo > max || hi < min || hi > max) {
-        return `Range ${part} out of bounds [${min}-${max}]`;
-      }
-      if (lo > hi) return `Range start > end: ${part}`;
-    } else {
-      if (!/^\d+$/.test(part)) return `Invalid field: ${part}`;
-      lo = Number(part);
-      if (lo < min || lo > max) return `Value ${lo} out of bounds [${min}-${max}]`;
-      hi = lo;
-    }
-
-    for (let value = lo; value <= hi; value += step) values.add(value);
-  }
-
-  return values;
-}
-
-// ---- 5 字段 cron 匹配：分 时 日 月 周 ----
-// DOM / DOW 双约束时用 OR 语义（标准 cron 行为）。
-// 每个 tick 重新解析；表达式很短，教学版不缓存解析结果，保持状态简单。
-function cronMatches(expr: string, dt: Date): boolean {
-  const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5) return false;
-
-  const parsed: Array<Set<number>> = [];
-  for (let i = 0; i < fields.length; i++) {
-    const values = parseCronField(fields[i], CRON_FIELDS[i].min, CRON_FIELDS[i].max);
-    // 非法表达式在注册/加载时已经被 validateCron 拒绝；这里只做防御。
-    if (typeof values === 'string') return false;
-    parsed.push(values);
-  }
-
-  const [minute, hour, dom, month, dow] = parsed;
-  // JS 的 Date.getDay() 已经是 0=周日..6=周六，与 cron 一致。
-  if (!minute.has(dt.getMinutes())) return false;
-  if (!hour.has(dt.getHours())) return false;
-  if (!month.has(dt.getMonth() + 1)) return false;
-
-  const domUnconstrained = fields[2] === '*';
-  const dowUnconstrained = fields[4] === '*';
-  const domOk = dom.has(dt.getDate());
-  const dowOk = dow.has(dt.getDay());
-  if (domUnconstrained && dowUnconstrained) return true;
-  if (domUnconstrained) return dowOk;
-  if (dowUnconstrained) return domOk;
-  return domOk || dowOk;
-}
-
-// ---- 5 字段表达式校验 ----
-// 返回错误信息或 null；具体语法由 parseCronField 负责。
-function validateCron(expr: string): string | null {
-  const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5) return `Expected 5 fields, got ${fields.length}`;
-  for (let i = 0; i < fields.length; i++) {
-    const { name, min, max } = CRON_FIELDS[i];
-    const values = parseCronField(fields[i], min, max);
-    if (typeof values === 'string') return `${name}: ${values}`;
-  }
-  return null;
-}
-
-// ============================================================
-// Part 3: 调度状态与持久化
+// Part 2: 调度状态与持久化
 // ============================================================
 
 // 可配置的定时器周期：默认 1s 调度轮询 / 默认 0.2s 队列轮询。

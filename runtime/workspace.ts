@@ -2,11 +2,11 @@
  * 工作区路径助手 —— 全仓这些路径都在这里统一定义。
  *
  * 各章以工作区根目录为基准，把状态写到其下的隐藏路径，而不是系统临时目录：
- *   .tasks/            —— 任务持久化（s12/s14/s16/s17/s20）
+ *   .tasks/            —— 任务持久化（s12/s14/s16/s20；s17 使用 .tasks/s17/ 子目录并在启动时重置）
  *   .memory/           —— 记忆文件与 MEMORY.md 索引（s09）
  *   .transcripts/      —— 会话 transcript（s08）
  *   .task_outputs/     —— 工具结果写入磁盘（s08，tool-results/*.txt）
- *   .mailboxes/        —— 队友信箱 *.jsonl（s15/s16/s17/s20）
+ *   .mailboxes/        —— 队友信箱 *.jsonl（s15/s16/s17/s20，各章再下沉一层自己的子目录）
  *   .worktrees/        —— worktree 事件日志 events.jsonl（s18）
  *   .scheduled_tasks.json —— durable cron 任务（s14）
  *

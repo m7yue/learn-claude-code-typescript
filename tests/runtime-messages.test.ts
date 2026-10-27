@@ -4,6 +4,7 @@ import {
   isToolResultMessage,
   messageText,
   sanitizeToolPairs,
+  toolErrorResult,
 } from "../runtime/response.ts";
 import type { Message } from "../runtime/types.ts";
 
@@ -72,5 +73,17 @@ test("sanitizeToolPairs 原样保留 is_error 标记", () => {
     { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "boom", is_error: true }] },
   ];
   assert.deepEqual(sanitizeToolPairs(messages), messages);
+});
+
+test("toolErrorResult 生成带 is_error 的错误结果", () => {
+  const fromError = toolErrorResult("t1", new Error("boom"));
+  assert.equal(fromError.type, "tool_result");
+  assert.equal(fromError.tool_use_id, "t1");
+  assert.equal(fromError.content, "[错误] boom");
+  assert.equal(fromError.is_error, true);
+
+  const fromValue = toolErrorResult("t2", "plain failure");
+  assert.equal(fromValue.content, "[错误] plain failure");
+  assert.equal(fromValue.is_error, true);
 });
 
