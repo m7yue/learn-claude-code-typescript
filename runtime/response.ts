@@ -42,6 +42,21 @@ export function messageText(content: MessageContent): string {
     .join('');
 }
 
+/**
+ * 生成带 is_error 的错误工具结果。
+ *
+ * 各章的工具派发 catch 统一用它，让模型能从协议层区分「执行失败」和
+ * 「执行成功但文本里恰好有 Error」。handler 内部不要再把错误吞成普通字符串。
+ */
+export function toolErrorResult(toolUseId: string, error: unknown): ToolResultBlock {
+  return {
+    type: 'tool_result',
+    tool_use_id: toolUseId,
+    content: `[错误] ${error instanceof Error ? error.message : String(error)}`,
+    is_error: true,
+  };
+}
+
 /** 判断一条消息是否为工具结果消息（user 消息且含 tool_result 块）。 */
 export function isToolResultMessage(message: Message): boolean {
   return (
