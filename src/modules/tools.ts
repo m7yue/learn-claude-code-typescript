@@ -37,12 +37,33 @@ export function createBaseTools(context: ToolContext): Record<string, ToolHandle
         return "Error: 危险命令已被拦截";
       }
 
-      const { stdout, stderr } = await execFileAsync("sh", ["-lc", command], {
-        cwd: context.cwd,
-        timeout: 120_000,
-        maxBuffer: 1024 * 1024,
-      });
-      return `${stdout}${stderr}`.trim() || "(no output)";
+      try {
+        const { stdout, stderr } = await execFileAsync("sh", ["-lc", command], {
+          cwd: context.cwd,
+          timeout: 120_000,
+          maxBuffer: 1024 * 1024,
+        });
+        return `${stdout}${stderr}`.trim() || "(no output)";
+      } catch (error) {
+        // 命令失败是 agent 需要看到的观察结果，不是 harness 崩溃。
+        // 返回错误字符串，让循环继续，模型可以据此换一条路。
+        const failure = error as {
+          code?: number;
+          killed?: boolean;
+          signal?: string;
+          stdout?: string;
+          stderr?: string;
+        };
+        const output = `${failure.stdout ?? ""}${failure.stderr ?? ""}`.trim();
+        if (failure.killed) {
+          return `Error: 命令超时\n${output || "(no output)"}`;
+        }
+        if (failure.signal) {
+          return `Error: 命令被信号终止（${failure.signal}）\n${output || "(no output)"}`;
+        }
+        const code = typeof failure.code === "number" ? failure.code : "error";
+        return `Error: 命令退出码 ${code}\n${output || "(no output)"}`;
+      }
     },
 
     read_file: async (args) => {

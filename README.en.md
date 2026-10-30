@@ -163,7 +163,9 @@ learn-claude-code-typescript/
 ├── src/
 │   ├── core/                # more engineering-oriented Agent loop / Effect / ScriptedModel / AnthropicModel
 │   ├── modules/             # reusable example implementations of harness mechanisms
+│   ├── harness-agent.ts     # reusable harness assembly shared by the CLI and evals
 │   └── harness.ts           # runnable engineering starting point (real tools + optional real model)
+├── evals/                   # capability evals for the engineering harness (tasks + judges + report)
 ├── docs/                    # study map, first principles, learning workflow
 ├── tests/                   # shared module behavior tests + full 20-chapter re-run
 └── .env.example             # real-mode config template (DeepSeek by default)
@@ -199,9 +201,19 @@ npm test
 
 # full 20-chapter re-run (child processes, forced mock, no network)
 npm run test:e2e
+
+# engineering-harness evals (mock; verifies the eval pipeline itself)
+npm run eval
+
+# eval self-check: gold must pass, broken must fail at least one required check
+npm run eval:check
 ```
 
 All chapters use mock/scripted handlers by default and do not require a real LLM API key — and they make no network calls. It is recommended to understand the loop, effect, handler, and state boundaries before connecting a real model.
+
+### Evals (optional)
+
+`evals/` measures the **engineering harness** (`src/harness-agent.ts`), not the 20 chapters: three fixed tasks, programmatic checks plus a judge, success rate/tokens/latency, and a `report.md`. Changes to chapters still go through `npm test` + `npm run test:e2e`. See [evals/README.md](evals/README.md).
 
 ### Real model (optional)
 
@@ -214,6 +226,7 @@ cp .env.example .env
 
 npm run s01 -- --real     # real mode for a single chapter
 npm run harness:real      # engineering harness: real model + real bash/file tools
+npm run eval:real         # engineering-harness evals: real model, 3 tasks × 3 trials
 ```
 
 Key points:

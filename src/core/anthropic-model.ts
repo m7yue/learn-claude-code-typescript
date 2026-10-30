@@ -46,10 +46,15 @@ function toModelTurn(response: LLMResponse): ModelTurn {
       toolUses: response.content
         .filter((block) => block.type === "tool_use")
         .map((block) => ({ id: block.id, name: block.name, args: block.input })),
+      usage: response.usage,
     };
   }
 
-  return { stopReason: "end", content };
+  if (response.stop_reason === "max_tokens") {
+    return { stopReason: "max_tokens", content, usage: response.usage };
+  }
+
+  return { stopReason: "end", content, usage: response.usage };
 }
 
 export class AnthropicModel implements Model {

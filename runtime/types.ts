@@ -26,10 +26,20 @@ export interface ToolResultBlock {
   is_error?: boolean;
 }
 
+/** 模型调用的 token 用量。字段名与 Anthropic 响应保持一致。 */
+export interface LLMUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 /** 模拟 LLM 响应 */
 export interface LLMResponse {
   stop_reason: 'tool_use' | 'end_turn' | 'max_tokens';
   content: Array<TextBlock | ToolUseBlock>;
+  /** 真实请求的用量；mock 或部分兼容端点可能没有。 */
+  usage?: LLMUsage;
 }
 
 /**

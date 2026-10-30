@@ -9,7 +9,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getModelConfig, loadEnvOnce, resolveMode, type ModelConfig } from "./env.ts";
 import { sanitizeToolPairs } from "./response.ts";
-import type { LLMResponse, Message, TextBlock, ToolUseBlock } from "./types.ts";
+import type { LLMResponse, LLMUsage, Message, TextBlock, ToolUseBlock } from "./types.ts";
 
 /** 工具入参 JSON Schema：直接复用 SDK 类型，保证与真实报文兼容。 */
 export type ToolInputSchema = Anthropic.Messages.Tool.InputSchema;
@@ -61,6 +61,19 @@ function mapStopReason(reason: string | null | undefined): LLMResponse["stop_rea
   return "end_turn";
 }
 
+/** 把 SDK 的 usage 转成仓库内部类型；缺失的缓存字段不填 0，保持 undefined。 */
+function mapUsage(usage: Anthropic.Messages.Usage | undefined): LLMUsage | undefined {
+  if (!usage) return undefined;
+  const cacheCreation = usage.cache_creation_input_tokens;
+  const cacheRead = usage.cache_read_input_tokens;
+  return {
+    input_tokens: usage.input_tokens,
+    output_tokens: usage.output_tokens,
+    ...(cacheCreation == null ? {} : { cache_creation_input_tokens: cacheCreation }),
+    ...(cacheRead == null ? {} : { cache_read_input_tokens: cacheRead }),
+  };
+}
+
 function mapContent(content: Anthropic.Messages.ContentBlock[]): LLMResponse["content"] {
   const blocks: Array<TextBlock | ToolUseBlock> = [];
   for (const block of content) {
@@ -104,6 +117,7 @@ export function createAnthropicChatHandler(config: ModelConfig): ChatHandler {
     return {
       stop_reason: mapStopReason(message.stop_reason),
       content: mapContent(message.content),
+      usage: mapUsage(message.usage),
     };
   };
 }

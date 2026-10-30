@@ -163,7 +163,9 @@ learn-claude-code-typescript/
 ├── src/
 │   ├── core/                # 更工程化的 Agent loop / Effect / ScriptedModel / AnthropicModel
 │   ├── modules/             # 可复用 harness 模块参考实现
+│   ├── harness-agent.ts     # 工程层 harness 的可复用组装（CLI 与 evals 共用）
 │   └── harness.ts           # 工程层可运行入口（真实工具 + 可选真实模型）
+├── evals/                   # 工程层能力评测（固定任务 + 裁判 + 报告）
 ├── docs/                    # 学习地图、第一性原理、学习工作流
 ├── tests/                   # 共享模块行为测试 + 20 章端到端回归
 └── .env.example             # real 模式配置模板（默认 DeepSeek）
@@ -199,9 +201,19 @@ npm test
 
 # 20 章端到端回归（子进程、强制 mock、不触网）
 npm run test:e2e
+
+# 工程层评测（mock，验证评测链路）
+npm run eval
+
+# 评测器自检：gold 必须全过、broken 必须至少失败一项
+npm run eval:check
 ```
 
 所有章节默认使用 mock / scripted handler，不需要真实 LLM API Key，也不产生任何网络请求。建议先理解 loop、effect、handler、state 的边界，再考虑接入真实模型。
+
+### 评测（可选）
+
+`evals/` 评的是**工程层 harness**（`src/harness-agent.ts`），不是 s01–s20：固定 3 个任务、程序化检查 + 裁判、成功率/token/延迟和 `report.md`。改章节仍然跑 `npm test` + `npm run test:e2e`。详见 [evals/README.md](evals/README.md)。
 
 ### 真实模型（可选）
 
@@ -214,6 +226,7 @@ cp .env.example .env
 
 npm run s01 -- --real     # 单章 real 模式
 npm run harness:real      # 工程层 harness：真实模型 + 真实 bash/文件工具
+npm run eval:real         # 工程层评测：真实模型 + 3 个任务 × 3 次
 ```
 
 要点：
