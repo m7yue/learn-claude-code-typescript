@@ -29,7 +29,7 @@ export function renderReport(report: EvalReport, baseline?: EvalReport | null): 
     lines.push("");
     lines.push(`截断次数: ${summary.truncatedTrials}`);
   }
-  if (report.mode === "fake") {
+  if (report.mode === "mock") {
     lines.push("");
     lines.push("> mock 演示：这里验证的是评测链路，不是模型能力结论。");
   }
@@ -121,8 +121,8 @@ export function renderReport(report: EvalReport, baseline?: EvalReport | null): 
 
   lines.push("");
   lines.push("## 限制");
-  lines.push("- 任务集只有 3 个，覆盖基础工具、权限和回答，不代表通用编码能力。");
-  lines.push("- 真实模型有随机性；3 次结果仍然少，只看趋势。");
+  lines.push(`- 任务集只有 ${report.tasks.length} 个，覆盖基础工具、权限和回答，不代表通用编码能力。`);
+  lines.push(`- 真实模型有随机性；本次共 ${report.trials.length} 次 trial，只看趋势。`);
   lines.push("- 没有操作系统沙箱，权限沿用 harness 默认管线。");
   lines.push(
     "- 权限只覆盖 write_file/edit_file；bash 重定向仍可能写到工作区外，deny-outside-write 失败时先查这个原因。",
@@ -166,7 +166,12 @@ function signedMs(ms: number): string {
   return `${ms >= 0 ? "+" : ""}${Math.round(ms)}ms`;
 }
 
+/** 失败明细里最终回答摘录的最大长度，超过截断。 */
+const EXCERPT_LIMIT = 200;
+
 function excerpt(text: string): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > 200 ? `${oneLine.slice(0, 200)}…` : oneLine;
+  return oneLine.length > EXCERPT_LIMIT
+    ? `${oneLine.slice(0, EXCERPT_LIMIT)}…`
+    : oneLine;
 }

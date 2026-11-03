@@ -7,7 +7,7 @@
  *   - 新增字段或检查时，schema、类型和校验规则在同一处维护。
  *
  * 校验分两层：zod 负责字段结构和单检查规则，superRefine 负责跨字段规则
- * （检查 id 唯一、selfCheck 最后一步必须是 final）。
+ * （检查 id 唯一、mock 回合序列最后一步必须是 answer）。
  */
 
 import { isAbsolute } from "node:path";
@@ -26,12 +26,13 @@ const regexString = z.string().refine((value) => {
   }
 }, "不是有效的正则表达式");
 
-/** 检查路径：允许相对路径、绝对路径和两个占位符；相对路径不能含 ..。 */
+/** 检查路径：允许相对路径、绝对路径和两个占位符；替换占位符后不能出现 ..。 */
 const checkPath = z.string().refine((value) => {
+  // 先替换占位符再做 .. 检查：{{WORKSPACE}}/../.. 这种写法替换后是绝对路径，
+  // 如果先判绝对路径就会漏掉它，「不能越出工作区」的承诺会失效。
   const rendered = value
     .replaceAll("{{WORKSPACE}}", "/workspace")
     .replaceAll("{{OUTSIDE}}", "/outside");
-  if (isAbsolute(rendered)) return true;
   return !rendered.split(/[\\/]/).includes("..");
 }, "路径不能越出工作区");
 
@@ -143,9 +144,9 @@ export const checkSpecSchema = z.discriminatedUnion("type", [
 ]);
 
 /**
- * 脚本化模型的一步：
+ * mock 模型的一步：
  * - 有 tool：调用一次工具；
- * - 有 final：给出最终回答。
+ * - 有 answer：给出最终回答并结束。
  */
 const scriptStepSchema = z.union([
   z.object({
@@ -156,33 +157,23 @@ const scriptStepSchema = z.union([
   }),
   z.object({
     /** 最终回答文本。 */
-    final: nonEmptyString,
+    answer: nonEmptyString,
   }),
 ]);
 
 const scriptStepsSchema = z.array(scriptStepSchema).min(1, "至少需要一步");
 
-/** gold / broken 都必须以 final 结束，否则脚本化模型会一直重复最后一个工具。 */
-const selfCheckSchema = z
-  .object({
-    /** 正确脚本：必须让所有 required 检查通过。 */
-    gold: scriptStepsSchema,
-    /** 错误脚本：至少要让一个 required 检查失败。 */
-    broken: scriptStepsSchema,
-  })
-  .superRefine((value, ctx) => {
-    for (const name of ["gold", "broken"] as const) {
-      const steps = value[name];
-      const last = steps[steps.length - 1];
-      if (!("final" in last)) {
-        ctx.addIssue({
-          code: "custom",
-          path: [name, steps.length - 1],
-          message: "最后一步必须是 final，否则脚本化模型会重复工具调用",
-        });
-      }
-    }
-  });
+/** 回合序列必须以 answer 结束，否则 mock 模型会一直重复最后一个工具。 */
+const mockTurnsSchema = scriptStepsSchema.superRefine((turns, ctx) => {
+  const last = turns[turns.length - 1];
+  if (!("answer" in last)) {
+    ctx.addIssue({
+      code: "custom",
+      path: [turns.length - 1],
+      message: "最后一步必须是 answer，否则 mock 模型会重复工具调用",
+    });
+  }
+});
 
 export const taskDefinitionSchema = z
   .object({
@@ -203,8 +194,13 @@ export const taskDefinitionSchema = z
     referencePoints: z.array(nonEmptyString).min(1, "不能为空"),
     /** 程序化检查；所有 required 检查通过，trial 才算通过。 */
     checks: z.array(checkSpecSchema).min(1, "至少需要一个检查"),
-    /** gold（正确脚本）和 broken（错误脚本），用于 eval:check。 */
-    selfCheck: selfCheckSchema,
+    /**
+     * mock 模型的正确回合序列：npm run eval（mock）用它当模型，
+     * eval:check 断言它通过所有 required 检查。
+     */
+    mockCorrectTurns: mockTurnsSchema,
+    /** mock 模型的错误回合序列：eval:check 断言它至少失败一项 required 检查。 */
+    mockWrongTurns: mockTurnsSchema,
   })
   .superRefine((task, ctx) => {
     const seen = new Set<string>();
@@ -224,7 +220,6 @@ export const taskDefinitionSchema = z
 export type TaskDefinition = z.infer<typeof taskDefinitionSchema>;
 export type CheckSpec = z.infer<typeof checkSpecSchema>;
 export type ScriptStep = z.infer<typeof scriptStepSchema>;
-export type TaskSelfCheck = z.infer<typeof selfCheckSchema>;
 export type FileContentCheck = z.infer<typeof fileContentCheckSchema>;
 export type FileMissingCheck = z.infer<typeof fileMissingCheckSchema>;
 export type FileUnchangedCheck = z.infer<typeof fileUnchangedCheckSchema>;

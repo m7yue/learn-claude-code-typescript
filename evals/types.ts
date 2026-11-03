@@ -18,7 +18,6 @@ export type {
   FinalAnswerCheck,
   ScriptStep,
   TaskDefinition,
-  TaskSelfCheck,
   ToolsUsedCheck,
 } from "./task-definition.ts";
 
@@ -41,7 +40,7 @@ export interface EvalTask extends TaskDefinition {
 export interface CheckResult {
   /** 对应 CheckSpec.id。 */
   id: string;
-  /** 检查类型，便于报告分组。 */
+  /** 检查类型，排查时用于区分；报告只按 required 和通过与否过滤。 */
   type: CheckSpec["type"];
   /** 是否影响 trial 通过。 */
   required: boolean;
@@ -56,7 +55,7 @@ export interface CheckResult {
 // ---------------------------------------------------------------------------
 
 /** 一次 trial 的轨迹事件；子进程写 JSONL，父进程读取后用于检查和报告。 */
-export type TrajectoryEvent =
+export type TraceEvent =
   | {
       /** 一次模型调用。 */
       type: "model";
@@ -96,25 +95,25 @@ export type TrajectoryEvent =
       reason: string;
     };
 
-/** 运行模式：fake 用脚本模型，real 用真实模型。 */
-export type RunMode = "fake" | "real";
+/** 运行模式：mock 用脚本模型，real 用真实模型。 */
+export type RunMode = "mock" | "real";
 
-/** 自检脚本名：gold 是正确脚本，broken 是错误脚本。 */
-export type ScriptName = "gold" | "broken";
+/** mock 回合序列名：correct 是正确回合，wrong 是错误回合。 */
+export type ScriptName = "correct" | "wrong";
 
 /** 一次 agent 运行的输入；由 runner 准备，由 AgentRunner 执行。 */
 export interface AgentRunInput {
-  /** 要跑的任务。 */
-  task: EvalTask;
+  /** 要跑的任务 id；实现方自己加载任务（子进程用 loadTask）。 */
+  taskId: string;
   /** 这次 trial 的工作区，agent 在这里读写文件。 */
   workspace: string;
   /** 越界写入的目标目录，用来检查文件有没有被写到外面。 */
   outside: string;
   /** 已经替换好占位符的 prompt 正文。 */
   prompt: string;
-  /** fake 或 real。 */
+  /** mock 或 real。 */
   mode: RunMode;
-  /** fake 模式下用哪套脚本；real 模式忽略。 */
+  /** mock 模式下回放哪套回合序列；real 模式忽略。 */
   script?: ScriptName;
   /** 子进程超时时间。 */
   timeoutMs: number;
@@ -134,12 +133,12 @@ export interface AgentRunResult {
   finalAnswer: string;
   /** mock 记 0，real 拿不到时记 null。 */
   tokens: { input: number; output: number } | null;
-  /** agent 执行耗时，不包含父进程启动子进程的时间。 */
+  /** 父进程测到的 wall-clock 延迟，包含子进程启动和 tsx 解析。 */
   durationMs: number;
   /** 是否有模型回合因为 max_tokens 被截断。 */
   truncated: boolean;
   /** 模型/工具/审批事件。 */
-  trace: TrajectoryEvent[];
+  trace: TraceEvent[];
   /** 失败时的错误信息。 */
   error?: string;
 }
@@ -154,14 +153,16 @@ export interface AgentRunner {
 // 裁判
 // ---------------------------------------------------------------------------
 
-/** 裁判需要的输入：任务（含参考要点）、最终回答和轨迹。 */
+/** 裁判需要的输入：任务（含参考要点）、渲染后的 prompt、最终回答和轨迹。 */
 export interface JudgeInput {
   /** 当前任务，裁判从里面读 referencePoints。 */
   task: EvalTask;
+  /** 渲染占位符后的 prompt 正文，与 agent 实际收到的完全一致。 */
+  prompt: string;
   /** agent 的最终回答。 */
   finalAnswer: string;
-  /** 轨迹；裁判目前不强制使用，但保留给以后检查过程。 */
-  trace: TrajectoryEvent[];
+  /** 预留字段：裁判目前不读，留给以后检查过程用。 */
+  trace: TraceEvent[];
 }
 
 /** 裁判的结果；score 和 passed 都可能为 null。 */
@@ -206,7 +207,7 @@ export interface TrialResult {
   finalAnswer: string;
   /** token 用量；mock 为 0，real 缺失为 null。 */
   tokens: { input: number; output: number } | null;
-  /** 这次 trial 的总耗时。 */
+  /** 这次 trial 的延迟（父进程 wall-clock）。 */
   durationMs: number;
   /** 是否有模型回合因为 max_tokens 被截断。 */
   truncated: boolean;
@@ -238,7 +239,7 @@ export interface TaskSummary {
   successRate: number;
   /** 平均 token；没有数据时为 null。 */
   avgTokens: TokenSummary | null;
-  /** 平均耗时，单位毫秒。 */
+  /** 平均延迟，单位毫秒。 */
   avgDurationMs: number;
   /** 每次 trial 的裁判结论。 */
   judges: JudgeResult[];
@@ -252,7 +253,7 @@ export interface EvalReport {
   schemaVersion: 1;
   /** 本次运行的唯一 id，结果目录名用它。 */
   runId: string;
-  /** fake 或 real。 */
+  /** mock 或 real。 */
   mode: RunMode;
   /** 候选模型名；mock 模式是 "mock"。 */
   model: string;
@@ -278,7 +279,7 @@ export interface EvalReport {
     successRate: number;
     /** 所有 trial 的平均 token；没有数据时为 null。 */
     avgTokens: TokenSummary | null;
-    /** 所有 trial 的平均耗时。 */
+    /** 所有 trial 的平均延迟。 */
     avgDurationMs: number;
     /** 被 max_tokens 截断的 trial 数。 */
     truncatedTrials: number;
@@ -289,9 +290,9 @@ export interface EvalReport {
 export interface RunOptions {
   /** 每个任务跑几次。 */
   trials: number;
-  /** fake 或 real。 */
+  /** mock 或 real。 */
   mode: RunMode;
-  /** fake 模式下用哪套自检脚本。 */
+  /** mock 模式下回放哪套回合序列。 */
   script?: ScriptName;
   /** 是否保留临时工作区；默认清理。 */
   keepWorkspace?: boolean;

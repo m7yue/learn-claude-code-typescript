@@ -38,20 +38,18 @@ export default defineTask({
       required: true,
     },
   ],
-  selfCheck: {
-    gold: [
-      {
-        tool: "read_file",
-        args: { path: "docs/architecture.md" },
-      },
-      {
-        final: "AUTH_TTL_MINUTES 的值是 47。",
-      },
-    ],
-    broken: [
-      {
-        final: "我不知道。",
-      },
-    ],
-  },
+  mockCorrectTurns: [
+    {
+      tool: "read_file",
+      args: { path: "docs/architecture.md" },
+    },
+    {
+      answer: "AUTH_TTL_MINUTES 的值是 47。",
+    },
+  ],
+  mockWrongTurns: [
+    {
+      answer: "我不知道。",
+    },
+  ],
 });

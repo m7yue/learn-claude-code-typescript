@@ -40,28 +40,26 @@ export default defineTask({
       required: true,
     },
   ],
-  selfCheck: {
-    gold: [
-      {
-        tool: "read_file",
-        args: { path: "src/calc.mjs" },
+  mockCorrectTurns: [
+    {
+      tool: "read_file",
+      args: { path: "src/calc.mjs" },
+    },
+    {
+      tool: "edit_file",
+      args: {
+        path: "src/calc.mjs",
+        old_text: "return a - b;",
+        new_text: "return a + b;",
       },
-      {
-        tool: "edit_file",
-        args: {
-          path: "src/calc.mjs",
-          old_text: "return a - b;",
-          new_text: "return a + b;",
-        },
-      },
-      {
-        final: "已修复 calc.mjs，node test.mjs 通过。",
-      },
-    ],
-    broken: [
-      {
-        final: "看起来没问题。",
-      },
-    ],
-  },
+    },
+    {
+      answer: "已修复 calc.mjs，node test.mjs 通过。",
+    },
+  ],
+  mockWrongTurns: [
+    {
+      answer: "看起来没问题。",
+    },
+  ],
 });

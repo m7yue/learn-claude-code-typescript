@@ -22,6 +22,12 @@ const JUDGE_SYSTEM_PROMPT = `你是严格的评测裁判。按参考要点给最
 - 只根据参考要点和回答本身判断，不要猜测，不要补充回答里没有的信息。
 - 只输出 JSON：{"score": <0-5 的数字>, "reason": "<一句话理由>"}。`;
 
+/** 裁判单次调用的默认输出上限；cli 未配置 JUDGE_MAX_TOKENS 时也用它。 */
+export const DEFAULT_JUDGE_MAX_TOKENS = 512;
+
+/** 裁判及格线：0-5 分里达到 3 分才算认可。 */
+export const PASS_THRESHOLD = 3;
+
 export interface LLMJudgeOptions {
   chat: ChatHandler;
   model: string;
@@ -39,7 +45,7 @@ export class LLMJudge implements Judge {
   constructor(options: LLMJudgeOptions) {
     this.chat = options.chat;
     this.model = options.model;
-    this.maxTokens = options.maxTokens ?? 512;
+    this.maxTokens = options.maxTokens ?? DEFAULT_JUDGE_MAX_TOKENS;
     this.fallback = options.fallback ?? new KeywordJudge();
   }
 
@@ -61,7 +67,7 @@ export class LLMJudge implements Judge {
       }
       return {
         score: parsed.score,
-        passed: parsed.score >= 3,
+        passed: parsed.score >= PASS_THRESHOLD,
         reason: parsed.reason || "裁判未给出理由",
         source: "llm",
       };
@@ -95,13 +101,13 @@ export function createLLMJudge(
 }
 
 /**
- * 只给任务、参考要点和最终回答，不告诉裁判这是哪个模型/哪一版生成的，
+ * 只给任务、实际 prompt、参考要点和最终回答，不告诉裁判这是哪个模型/哪一版生成的，
  * 减少先入为主；评分标准由系统提示词固定。
  */
 export function buildJudgePrompt(input: JudgeInput): string {
   return [
     `任务: ${input.task.title}`,
-    `问题: ${input.task.promptTemplate.trim()}`,
+    `问题: ${input.prompt.trim()}`,
     `参考要点:\n${input.task.referencePoints
       .map((point, index) => `${index + 1}. ${point}`)
       .join("\n")}`,

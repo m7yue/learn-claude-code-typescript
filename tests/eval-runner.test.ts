@@ -36,10 +36,8 @@ function makeTask(fixtureDir: string): EvalTask {
       { id: "result", type: "file-content", path: "result.txt", contains: "ok", required: true },
       { id: "answer", type: "final-answer", contains: ["完成"], required: true },
     ],
-    selfCheck: {
-      gold: [{ final: "完成" }],
-      broken: [{ final: "失败" }],
-    },
+    mockCorrectTurns: [{ answer: "完成" }],
+    mockWrongTurns: [{ answer: "失败" }],
   };
 }
 
@@ -76,10 +74,10 @@ test("runEvals 汇总成功率、token 和延迟", async () => {
   try {
     const report = await runEvals([makeTask(fixtureDir)], new FakeAgentRunner(true), new KeywordJudge(), {
       trials: 2,
-      mode: "fake",
+      mode: "mock",
       model: "mock",
       judge: "keyword",
-      script: "gold",
+      script: "correct",
     });
 
     assert.equal(report.summary.totalTrials, 2);
@@ -99,10 +97,10 @@ test("检查失败时 trial 记为未通过，并保留失败原因", async () =
   try {
     const report = await runEvals([makeTask(fixtureDir)], new FakeAgentRunner(false), new KeywordJudge(), {
       trials: 1,
-      mode: "fake",
+      mode: "mock",
       model: "mock",
       judge: "keyword",
-      script: "gold",
+      script: "correct",
     });
 
     assert.equal(report.summary.passedTrials, 0);
@@ -120,10 +118,10 @@ test("换裁判不改变 Runner 调用和任务结果", async () => {
     const agent = new FakeAgentRunner(true);
     const options = {
       trials: 2,
-      mode: "fake" as const,
+      mode: "mock" as const,
       model: "mock",
       judge: "injection",
-      script: "gold" as const,
+      script: "correct" as const,
     };
     const judgeA: Judge = {
       name: "judge-a",
@@ -165,10 +163,10 @@ test("keepIo 和 onIoKept 会传给 AgentRunner", async () => {
     const kept: string[] = [];
     await runEvals([makeTask(fixtureDir)], agent, new KeywordJudge(), {
       trials: 1,
-      mode: "fake",
+      mode: "mock",
       model: "mock",
       judge: "keyword",
-      script: "gold",
+      script: "correct",
       keepIo: true,
       onIoKept: (path) => kept.push(path),
     });
@@ -185,10 +183,10 @@ test("report.md 包含总览、逐任务、裁判理由和基线对比", async (
   try {
     const report = await runEvals([makeTask(fixtureDir)], new FakeAgentRunner(true), new KeywordJudge(), {
       trials: 1,
-      mode: "fake",
+      mode: "mock",
       model: "mock",
       judge: "keyword",
-      script: "gold",
+      script: "correct",
     });
     const markdown = renderReport(report, report);
 

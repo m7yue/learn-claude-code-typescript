@@ -7,7 +7,7 @@ import {
   evaluateChecks,
   type CheckContext,
 } from "../evals/checks/index.ts";
-import type { CheckSpec, TrajectoryEvent } from "../evals/types.ts";
+import type { CheckSpec, TraceEvent } from "../evals/types.ts";
 
 function setup(): { root: string; context: CheckContext } {
   const root = mkdtempSync(join(tmpdir(), "lcc-eval-checks-"));
@@ -20,7 +20,7 @@ function setup(): { root: string; context: CheckContext } {
   writeFileSync(join(workspace, "data.txt"), "hello 47\n", "utf8");
   writeFileSync(join(workspace, "keep.txt"), "same", "utf8");
   writeFileSync(join(fixtureDir, "keep.txt"), "same", "utf8");
-  const trace: TrajectoryEvent[] = [
+  const trace: TraceEvent[] = [
     {
       type: "tool",
       name: "read_file",

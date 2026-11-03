@@ -205,7 +205,7 @@ npm run test:e2e
 # 工程层评测（mock，验证评测链路）
 npm run eval
 
-# 评测器自检：gold 必须全过、broken 必须至少失败一项
+# 评测器自检：correct 必须全过、wrong 必须至少失败一项
 npm run eval:check
 ```
 

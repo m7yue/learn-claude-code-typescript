@@ -13,8 +13,8 @@ test("三个任务都能加载，且都提供关键词和 reference 要点", () 
     assert.ok(task.expectKeywords.length > 0, `${task.id} 的 expectKeywords 为空`);
     assert.ok(task.referencePoints.length > 0, `${task.id} 的 referencePoints 为空`);
     assert.ok(task.checks.length > 0, `${task.id} 没有检查`);
-    assert.ok(task.selfCheck.gold.length > 0, `${task.id} 没有 gold 脚本`);
-    assert.ok(task.selfCheck.broken.length > 0, `${task.id} 没有 broken 脚本`);
+    assert.ok(task.mockCorrectTurns.length > 0, `${task.id} 没有正确回合`);
+    assert.ok(task.mockWrongTurns.length > 0, `${task.id} 没有错误回合`);
   }
 });
 
@@ -54,10 +54,10 @@ test("validateTaskDefinition 拒绝非法正则和越界路径", () => {
   assert.throws(() => validateTaskDefinition(badPath), /工作区内相对路径/);
 });
 
-test("validateTaskDefinition 要求 selfCheck 最后一步是 final", () => {
+test("validateTaskDefinition 要求 mock 回合序列最后一步是 answer", () => {
   const task = structuredClone(TASK_MODULES["read-file-answer"]);
-  task.selfCheck.gold = [
+  task.mockCorrectTurns = [
     { tool: "read_file", args: { path: "docs/architecture.md" } },
   ];
-  assert.throws(() => validateTaskDefinition(task), /最后一步必须是 final/);
+  assert.throws(() => validateTaskDefinition(task), /最后一步必须是 answer/);
 });

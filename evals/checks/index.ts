@@ -25,7 +25,7 @@ import { promisify } from "node:util";
 import type {
   CheckResult,
   CheckSpec,
-  TrajectoryEvent,
+  TraceEvent,
 } from "../types.ts";
 
 const execFileAsync = promisify(execFile);
@@ -44,7 +44,7 @@ export interface CheckContext {
   /** agent 的最终回答。 */
   finalAnswer: string;
   /** 轨迹事件，tools-used 从这里统计。 */
-  trace: TrajectoryEvent[];
+  trace: TraceEvent[];
 }
 
 /**
@@ -234,7 +234,7 @@ function hashFile(path: string): string {
 /**
  * 在任务工作区里执行验证命令。
  *
- * - 用 `sh -lc` 执行，stdout 和 stderr 合并后用于 stdoutContains；
+ * - 用 `sh -lc` 执行（登录 shell，让 nvm 等方式装的 node 也在 PATH），stdout 和 stderr 合并后用于 stdoutContains；
  * - expectExit 默认 0；非零退出码是检查结果，不是评测崩溃；
  * - 超时或被信号终止时 execFile 不给数字 code，统一按 1 记；
  * - 只有退出码符合预期后，才检查 stdoutContains。

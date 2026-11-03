@@ -2,7 +2,7 @@
  * Evals CLI：装配 AgentRunner + Judge，跑任务并写报告。
  *
  *   npm run eval           # mock + 脚本化 agent + KeywordJudge
- *   npm run eval:check     # gold 必须过、broken 必须失败
+ *   npm run eval:check     # correct 必须过、wrong 必须失败
  *   npm run eval:real      # 真实模型（需要 .env）
  *   npm run eval -- --help # 查看所有参数和默认值
  */
@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { getModelConfig } from "../../runtime/env.ts";
 import { HarnessAgentRunner } from "../agent-runner.ts";
 import { KeywordJudge } from "../judges/keyword.ts";
-import { createLLMJudge } from "../judges/llm.ts";
+import { createLLMJudge, DEFAULT_JUDGE_MAX_TOKENS } from "../judges/llm.ts";
 import { loadTasks } from "../loader.ts";
 import { renderReport } from "../report.ts";
 import { runEvals } from "../runner.ts";
@@ -27,6 +27,12 @@ const EVALS_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const program = buildProgram();
 program.parse(process.argv);
 const opts = program.opts();
+
+// --self-check 固定用 mock + keyword + 1 次；与评测参数组合会静默被忽略，直接拒绝。
+if (opts.selfCheck && (opts.real || opts.judge !== undefined || opts.trials !== undefined)) {
+  console.error("[eval] --self-check 不支持与 --real / --judge / --trials 组合");
+  process.exit(1);
+}
 
 // 评测模式只由 CLI 决定：默认 mock，只有显式 --real 才发请求。
 // 刻意不读 .env 里的 AGENT_MODE，避免本地配置让 npm run eval 意外触网。
@@ -83,7 +89,7 @@ async function run(runMode: RunMode, runOptions: EvalOptions): Promise<void> {
   let judge: Judge;
   let selfJudge = false;
   if (runOptions.judge === "llm") {
-    if (runMode === "fake" || !config) {
+    if (runMode === "mock" || !config) {
       // mock 模式不该触网；缺配置时也不静默发请求。
       console.warn("[eval] mock 模式或缺少真实模型配置，本次使用 KeywordJudge。");
       judge = new KeywordJudge();
@@ -96,13 +102,13 @@ async function run(runMode: RunMode, runOptions: EvalOptions): Promise<void> {
       }
       judge = createLLMJudge(config, {
         judgeModel,
-        maxTokens: Number(process.env.JUDGE_MAX_TOKENS) || 512,
+        maxTokens: Number(process.env.JUDGE_MAX_TOKENS) || DEFAULT_JUDGE_MAX_TOKENS,
       });
     }
   } else {
     judge = new KeywordJudge();
   }
-  const modelLabel = runMode === "fake" ? "mock" : config?.model ?? "unknown";
+  const modelLabel = runMode === "mock" ? "mock" : config?.model ?? "unknown";
 
   console.log(
     `[eval] 模式: ${runMode} | 裁判: ${judge.name} | 任务: ${tasks.length} | trials: ${runOptions.trials}`,
@@ -111,8 +117,8 @@ async function run(runMode: RunMode, runOptions: EvalOptions): Promise<void> {
   const report = await runEvals(tasks, new HarnessAgentRunner(), judge, {
     trials: runOptions.trials,
     mode: runMode,
-    // mock 走 gold 脚本；real 直接用真实模型，script 不生效。
-    script: runMode === "fake" ? "gold" : undefined,
+    // mock 回放 mockCorrectTurns；real 直接用真实模型，script 不生效。
+    script: runMode === "mock" ? "correct" : undefined,
     keepWorkspace: runOptions.keepWorkspace,
     onWorkspaceKept: (path) => console.log(`[eval] 保留工作区: ${path}`),
     keepIo: runOptions.keepIo,
@@ -147,8 +153,8 @@ async function run(runMode: RunMode, runOptions: EvalOptions): Promise<void> {
 }
 
 /**
- * 用同一套 Runner 和检查器跑 gold / broken：
- * gold 必须通过，broken 必须至少失败一项。验证的是评测器本身，不是模型能力。
+ * 用同一套 Runner 和检查器跑 correct / wrong 两套 mock 回合：
+ * correct 必须通过，wrong 必须至少失败一项。验证的是评测器本身，不是模型能力。
  */
 async function selfCheck(checkTasks: EvalTask[]): Promise<void> {
   const judge = new KeywordJudge();
@@ -156,43 +162,45 @@ async function selfCheck(checkTasks: EvalTask[]): Promise<void> {
   let failures = 0;
 
   for (const task of checkTasks) {
-    const gold = await runEvals([task], agent, judge, {
+    const correct = await runEvals([task], agent, judge, {
       trials: 1,
-      mode: "fake",
-      script: "gold",
+      mode: "mock",
+      script: "correct",
       model: "mock",
       judge: "keyword",
     });
-    const broken = await runEvals([task], agent, judge, {
+    const wrong = await runEvals([task], agent, judge, {
       trials: 1,
-      mode: "fake",
-      script: "broken",
+      mode: "mock",
+      script: "wrong",
       model: "mock",
       judge: "keyword",
     });
 
-    const goldOk = gold.summary.passedTrials === 1;
-    const brokenOk = broken.summary.passedTrials === 0;
-    if (!goldOk) failures += 1;
-    if (!brokenOk) failures += 1;
+    const correctOk = correct.summary.passedTrials === 1;
+    const wrongOk = wrong.summary.passedTrials === 0;
+    if (!correctOk) failures += 1;
+    if (!wrongOk) failures += 1;
 
-    console.log(`${goldOk ? "✓" : "✗"} ${task.id} gold: ${gold.summary.passedTrials}/1 通过`);
     console.log(
-      `${brokenOk ? "✓" : "✗"} ${task.id} broken: ${broken.summary.passedTrials}/1 通过（预期 0）`,
+      `${correctOk ? "✓" : "✗"} ${task.id} correct: ${correct.summary.passedTrials}/1 通过`,
+    );
+    console.log(
+      `${wrongOk ? "✓" : "✗"} ${task.id} wrong: ${wrong.summary.passedTrials}/1 通过（预期 0）`,
     );
 
-    if (!goldOk) {
-      for (const trial of gold.trials) {
+    if (!correctOk) {
+      for (const trial of correct.trials) {
         for (const check of trial.checks.filter((item) => !item.passed)) {
-          console.log(`    gold 失败: ${check.id}: ${check.message}`);
+          console.log(`    correct 失败: ${check.id}: ${check.message}`);
         }
-        if (trial.error) console.log(`    gold 错误: ${trial.error}`);
+        if (trial.error) console.log(`    correct 错误: ${trial.error}`);
       }
     }
-    if (!brokenOk) {
-      for (const trial of broken.trials) {
+    if (!wrongOk) {
+      for (const trial of wrong.trials) {
         for (const check of trial.checks.filter((item) => item.passed)) {
-          console.log(`    broken 仍通过: ${check.id}`);
+          console.log(`    wrong 仍通过: ${check.id}`);
         }
       }
     }
@@ -203,7 +211,7 @@ async function selfCheck(checkTasks: EvalTask[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  console.log(`[eval:check] 全部 ${checkTasks.length} 个任务的 gold/broken 符合预期`);
+  console.log(`[eval:check] 全部 ${checkTasks.length} 个任务的 correct/wrong 符合预期`);
 }
 
 /** 读基线报告；只做最低限度的版本校验，字段结构由同一套代码生成。 */

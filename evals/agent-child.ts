@@ -22,7 +22,7 @@ import type {
   RunMode,
   ScriptName,
   ScriptStep,
-  TrajectoryEvent,
+  TraceEvent,
 } from "./types.ts";
 
 const { values } = parseArgs({
@@ -31,8 +31,8 @@ const { values } = parseArgs({
     workspace: { type: "string" },
     outside: { type: "string" },
     "prompt-file": { type: "string" },
-    mode: { type: "string", default: "fake" },
-    script: { type: "string", default: "gold" },
+    mode: { type: "string", default: "mock" },
+    script: { type: "string", default: "correct" },
     "result-file": { type: "string" },
     "trace-file": { type: "string" },
     "max-turns": { type: "string" },
@@ -45,17 +45,18 @@ const outside = requireArg(values.outside, "outside");
 const promptFile = requireArg(values["prompt-file"], "prompt-file");
 const resultFile = requireArg(values["result-file"], "result-file");
 const traceFile = requireArg(values["trace-file"], "trace-file");
-const mode: RunMode = values.mode === "real" ? "real" : "fake";
-const script: ScriptName = values.script === "broken" ? "broken" : "gold";
+// 子进程参数由父进程拼写；拼错了就是配置错误，直接抛错而不是静默折回默认值。
+const mode: RunMode = parseMode(values.mode);
+const script: ScriptName = parseScript(values.script);
 
 const task = loadTask(taskId);
 const prompt = readFileSync(promptFile, "utf8");
 const vars: RenderVars = { WORKSPACE: workspace, OUTSIDE: outside };
-const maxTurns = Number(values["max-turns"]) || task.maxTurns;
+const maxTurns = parseMaxTurns(values["max-turns"], task.maxTurns);
 
 // 轨迹同时留在内存里给 result.json 用，并逐条追加到文件：
 // 父进程超时杀掉本进程时，文件里至少留下已经发生的事件。
-const trace: TrajectoryEvent[] = [];
+const trace: TraceEvent[] = [];
 const observer: HarnessObserver = {
   onModelTurn: (event) => {
     push({
@@ -87,8 +88,9 @@ const observer: HarnessObserver = {
   },
 };
 
-// result.json 里保留一份子进程内部的 agent 耗时，排查时可对照 trace；
-// 报告里的延迟由父进程按 wall-clock 测量，包含进程启动和 tsx 解析。
+// result.json 里保留一份子进程内部的 agent 延迟，排查时可对照 trace；
+// 父进程会用自己测的 wall-clock（含进程启动和 tsx 解析）覆盖 durationMs，
+// 这份内部值只留在 result.json 里。
 const startedAt = Date.now();
 let result: AgentRunResult;
 
@@ -135,10 +137,11 @@ writeFileSync(resultTemp, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 renameSync(resultTemp, resultFile);
 
 function buildModel(): Model {
-  if (mode === "fake") {
-    // 只把模型换成脚本；createHarnessAgent、工具和权限管线仍然是真实的，
-    // 所以 gold/broken 自检验证的是同一条执行路径。
-    return new ScriptedModel(toTurns(task.selfCheck[script], vars));
+  if (mode === "mock") {
+    // 只把模型换成 mock 回合序列；createHarnessAgent、工具和权限管线仍然是真实的，
+    // 所以 correct/wrong 自检验证的是同一条执行路径。
+    const turns = script === "wrong" ? task.mockWrongTurns : task.mockCorrectTurns;
+    return new ScriptedModel(toTurns(turns, vars));
   }
   // 离线保险：即使调用方误传 --real，也不能发请求。
   if (process.env.EVAL_OFFLINE === "1") {
@@ -161,7 +164,7 @@ function toTurns(steps: ScriptStep[], variables: RenderVars): ModelTurn[] {
         renderValue(step.args, variables) as Record<string, unknown>,
       );
     }
-    return finalTurn(step.final);
+    return finalTurn(step.answer);
   });
 }
 
@@ -170,15 +173,15 @@ function toTurns(steps: ScriptStep[], variables: RenderVars): ModelTurn[] {
  * 报告显示「—」，不把「不可用」伪装成 0。
  */
 function sumTokens(
-  events: TrajectoryEvent[],
+  events: TraceEvent[],
   runMode: RunMode,
 ): { input: number; output: number } | null {
   const usages = events.filter(
-    (event): event is Extract<TrajectoryEvent, { type: "model" }> =>
+    (event): event is Extract<TraceEvent, { type: "model" }> =>
       event.type === "model" && event.usage !== undefined,
   );
   if (usages.length === 0) {
-    return runMode === "fake" ? { input: 0, output: 0 } : null;
+    return runMode === "mock" ? { input: 0, output: 0 } : null;
   }
   return {
     input: usages.reduce((sum, event) => sum + (event.usage?.input_tokens ?? 0), 0),
@@ -187,7 +190,7 @@ function sumTokens(
 }
 
 /** 内存留一份、文件追加一份：父进程超时杀进程时，已发生的事件不会丢。 */
-function push(event: TrajectoryEvent): void {
+function push(event: TraceEvent): void {
   trace.push(event);
   appendTrace(traceFile, event);
 }
@@ -197,4 +200,26 @@ function requireArg(value: string | undefined, name: string): string {
     throw new Error(`缺少参数 --${name}`);
   }
   return value;
+}
+
+/** --mode 只接受 real / mock；拼错即抛错，不静默折回默认值。 */
+function parseMode(value: string): RunMode {
+  if (value === "real" || value === "mock") return value;
+  throw new Error(`--mode 只能是 real 或 mock，收到: ${value}`);
+}
+
+/** --script 只接受 correct / wrong；拼错即抛错。 */
+function parseScript(value: string): ScriptName {
+  if (value === "correct" || value === "wrong") return value;
+  throw new Error(`--script 只能是 correct 或 wrong，收到: ${value}`);
+}
+
+/** --max-turns 缺省用任务值；给了就必须是正整数。 */
+function parseMaxTurns(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`--max-turns 必须是正整数，收到: ${value}`);
+  }
+  return parsed;
 }

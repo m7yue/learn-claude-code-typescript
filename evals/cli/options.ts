@@ -27,7 +27,7 @@ export interface EvalOptions {
 
 /** mock 和 real 的默认值不同：mock 只验证链路，real 需要重复几次看波动。 */
 export const MODE_DEFAULTS: Record<RunMode, EvalOptions> = {
-  fake: {
+  mock: {
     trials: 1,
     judge: "keyword",
     keepWorkspace: false,

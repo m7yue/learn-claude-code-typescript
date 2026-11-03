@@ -22,11 +22,11 @@ function chatReturning(text: string): ChatHandler {
 
 test("KeywordJudge 要求全部关键词", async () => {
   const judge = new KeywordJudge();
-  const good = await judge.evaluate({ task, finalAnswer: goodAnswer, trace: [] });
+  const good = await judge.evaluate({ task, prompt: task.promptTemplate, finalAnswer: goodAnswer, trace: [] });
   assert.equal(good.passed, true);
   assert.equal(good.score, 5);
 
-  const bad = await judge.evaluate({ task, finalAnswer: "我不知道。", trace: [] });
+  const bad = await judge.evaluate({ task, prompt: task.promptTemplate, finalAnswer: "我不知道。", trace: [] });
   assert.equal(bad.passed, false);
   assert.match(bad.reason, /缺少关键词/);
 });
@@ -36,7 +36,7 @@ test("LLMJudge 解析 JSON 并给出分数", async () => {
     chat: chatReturning('{"score": 4, "reason": "回答了 47，但没提到文档来源"}'),
     model: "fake-judge",
   });
-  const verdict = await judge.evaluate({ task, finalAnswer: goodAnswer, trace: [] });
+  const verdict = await judge.evaluate({ task, prompt: task.promptTemplate, finalAnswer: goodAnswer, trace: [] });
 
   assert.equal(verdict.source, "llm");
   assert.equal(verdict.score, 4);
@@ -49,7 +49,7 @@ test("LLMJudge 兼容 Markdown 代码块，解析失败时回退 KeywordJudge", 
     chat: chatReturning('```json\n{"score": 5, "reason": "完整"}\n```'),
     model: "fake-judge",
   });
-  const parsed = await withCodeBlock.evaluate({ task, finalAnswer: goodAnswer, trace: [] });
+  const parsed = await withCodeBlock.evaluate({ task, prompt: task.promptTemplate, finalAnswer: goodAnswer, trace: [] });
   assert.equal(parsed.score, 5);
   assert.equal(parsed.source, "llm");
 
@@ -58,7 +58,7 @@ test("LLMJudge 兼容 Markdown 代码块，解析失败时回退 KeywordJudge", 
     model: "fake-judge",
     fallback: new KeywordJudge(),
   });
-  const fallback = await broken.evaluate({ task, finalAnswer: goodAnswer, trace: [] });
+  const fallback = await broken.evaluate({ task, prompt: task.promptTemplate, finalAnswer: goodAnswer, trace: [] });
   assert.equal(fallback.source, "fallback");
   assert.equal(fallback.passed, true);
   assert.match(fallback.reason, /LLM 裁判失败/);
@@ -77,7 +77,7 @@ test("parseJudgeOutput 拒绝非法分数并夹在 0-5", () => {
 });
 
 test("裁判提示词包含参考要点和最终回答", () => {
-  const prompt = buildJudgePrompt({ task, finalAnswer: goodAnswer, trace: [] });
+  const prompt = buildJudgePrompt({ task, prompt: task.promptTemplate, finalAnswer: goodAnswer, trace: [] });
   assert.match(prompt, /参考要点/);
   assert.match(prompt, /AUTH_TTL_MINUTES 的值是 47/);
   assert.match(prompt, /docs\/architecture\.md/);

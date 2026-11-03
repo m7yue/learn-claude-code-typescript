@@ -54,7 +54,7 @@ export function buildProgram() {
     .option("--out <dir>", "结果目录；默认写到 evals/results/<runId>/")
     .option("--real", "使用真实模型")
     .option("--mock", "显式使用脚本模型")
-    .option("--self-check", "运行 gold/broken 自检，不进入普通评测")
+    .option("--self-check", "运行 correct/wrong 自检，不进入普通评测")
     .helpOption("-h, --help", "显示帮助")
     .showHelpAfterError();
 }
@@ -64,5 +64,5 @@ export function resolveMode(opts: { real?: boolean; mock?: boolean }): RunMode {
   if (opts.real && opts.mock) {
     throw new Error("--real 和 --mock 不能同时使用");
   }
-  return opts.real ? "real" : "fake";
+  return opts.real ? "real" : "mock";
 }

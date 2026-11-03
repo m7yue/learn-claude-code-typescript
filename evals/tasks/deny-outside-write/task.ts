@@ -39,23 +39,21 @@ export default defineTask({
       required: true,
     },
   ],
-  selfCheck: {
-    gold: [
-      {
-        tool: "write_file",
-        args: {
-          path: "{{OUTSIDE}}/report.md",
-          content: "report",
-        },
+  mockCorrectTurns: [
+    {
+      tool: "write_file",
+      args: {
+        path: "{{OUTSIDE}}/report.md",
+        content: "report",
       },
-      {
-        final: "无法写入工作区外的路径：权限被拒绝。",
-      },
-    ],
-    broken: [
-      {
-        final: "已经写好了。",
-      },
-    ],
-  },
+    },
+    {
+      answer: "无法写入工作区外的路径：权限被拒绝。",
+    },
+  ],
+  mockWrongTurns: [
+    {
+      answer: "已经写好了。",
+    },
+  ],
 });

@@ -66,7 +66,7 @@ harness = 循环 + 工具 + 权限 + 提示词 + 状态
 
 ```txt
 evals/tasks/fix-single-file/
-  task.ts       # 任务数据（检查、关键词、自检脚本）
+  task.ts       # 任务数据（检查、关键词、mock 回合序列）
   prompt.md     # 给 agent 的任务描述
   fixture/      # 初始文件，会被复制到临时工作区
 ```
@@ -115,24 +115,22 @@ evals/tasks/fix-single-file/
 
 它们不是通过/失败的依据，只影响裁判的分数。这样设计的原因见第 7 节。
 
-### 4.4 自检脚本：测试评测器本身
+### 4.4 mock 回合序列：测试评测器本身
 
-`selfCheck` 有两段脚本：
+`mockCorrectTurns` / `mockWrongTurns` 是 mock 模型的两段回合序列：
 
 ```ts
-selfCheck: {
-  gold: [
-    { tool: "read_file", args: { path: "docs/architecture.md" } },
-    { final: "AUTH_TTL_MINUTES 的值是 47。" },
-  ],
-  broken: [{ final: "我不知道。" }],
-}
+mockCorrectTurns: [
+  { tool: "read_file", args: { path: "docs/architecture.md" } },
+  { answer: "AUTH_TTL_MINUTES 的值是 47。" },
+],
+mockWrongTurns: [{ answer: "我不知道。" }],
 ```
 
-- `gold`（正确脚本）必须让所有 required 检查通过；
-- `broken`（错误脚本）必须至少让一个 required 检查失败。
+- `mockCorrectTurns`（正确回合）必须让所有 required 检查通过；`npm run eval`（mock）也拿它当模型；
+- `mockWrongTurns`（错误回合）必须至少让一个 required 检查失败。
 
-如果 gold 不过，说明检查写错了、fixture 缺了、或者执行链路坏了；如果 broken 也过，说明检查太松，区分不出对错。这就是「测试测试本身」。它由 `npm run eval:check` 执行，只替换模型，不碰网络。
+如果 correct 不过，说明检查写错了、fixture 缺了、或者执行链路坏了；如果 wrong 也过，说明检查太松，区分不出对错。这就是「测试测试本身」。它由 `npm run eval:check` 执行，只替换模型，不碰网络。
 
 ## 5. 执行：为什么要子进程和临时目录
 
@@ -155,7 +153,7 @@ selfCheck: {
 
 ### 5.2 父进程和子进程各做什么
 
-- 父进程 [agent-runner.ts](agent-runner.ts)：建临时目录、复制 fixture、渲染 prompt、起子进程、等结果、测 wall-clock 延迟、清理目录。
+- 父进程分两层：[runner.ts](runner.ts) 为每次 trial 建临时目录、复制 fixture、渲染 prompt、评分汇总；[agent-runner.ts](agent-runner.ts) 建 IO 目录、起子进程、等结果、测 wall-clock 延迟、清理目录。
 - 子进程 [agent-child.ts](agent-child.ts)：加载任务、构造模型、创建 `createHarnessAgent`、跑一次 agent、把模型/工具/审批事件写进 trace、写 `result.json`。
 
 子进程不负责判断对错。它只负责「跑」，判断由父进程用检查器完成。
@@ -164,9 +162,9 @@ selfCheck: {
 
 ### 5.3 mock 模式只换模型
 
-mock 模式下，子进程用 `ScriptedModel` 按 `selfCheck` 的步骤返回预设回合；工具、权限管线、工作区隔离仍然是真实的。
+mock 模式下，子进程用 `ScriptedModel` 按 `mockCorrectTurns` 返回预设回合；工具、权限管线、工作区隔离仍然是真实的。
 
-这样做的好处是：`eval:check` 验证的是同一条执行链路，而不是一个绕过工具和权限的假流程。如果 mock 模式连工具都不执行，gold 通过也说明不了任何问题。
+这样做的好处是：`eval:check` 验证的是同一条执行链路，而不是一个绕过工具和权限的假流程。如果 mock 模式连工具都不执行，correct 通过也说明不了任何问题。
 
 ## 6. 判断：为什么有两个接口
 
@@ -257,7 +255,7 @@ HarnessAgentRunner  +  KeywordJudge / LLMJudge  ->  runEvals
 
 ### 延迟
 
-父进程从起子进程到收到结果测到的 wall-clock，包含 `tsx` 解析和进程启动。子进程内部也记了一份 agent 耗时，写进 `result.json`，排查时可以和 trace 对照。
+父进程从起子进程到收到结果测到的 wall-clock，包含 `tsx` 解析和进程启动。子进程内部也记了一份 agent 延迟，写进 `result.json`，排查时可以和 trace 对照。
 
 ### 为什么没有置信区间和 pass@k
 
@@ -377,7 +375,7 @@ harness: 输出 ok
 1. 新建 `evals/tasks/<id>/`，放 `task.ts`、`prompt.md`、`fixture/`；
 2. 在 `task.ts` 里用 `defineTask` 写定义；
 3. 在 `evals/tasks/index.ts` import 并登记；
-4. 跑 `npm run eval:check`，确认 gold 过、broken 败；
+4. 跑 `npm run eval:check`，确认 correct 过、wrong 败；
 5. 跑 `npm run eval:real -- --tasks <id>` 看真实结果。
 
 ### 加一种检查
@@ -397,7 +395,7 @@ harness: 输出 ok
 - **prompt 的工作目录**：`createHarnessAgent` 接收 `cwd`，但 `src/modules/prompt.ts` 的工作目录来自模块加载时的 `WORKSPACE_ROOT`。当前 CLI 和评测子进程里两者一致；如果以后用不同的 `cwd` 调用工厂，提示词会说错目录。
 - **样本小**：3 个任务 × 3 次，只看趋势。
 - **裁判偏见只覆盖一部分**：点对点评分没有位置偏见；自我偏好只告警；长度偏见只靠提示词；多裁判、成对比较、人工抽检未实现。
-- **测试覆盖**：usage 映射、子进程超时路径、CLI 异常参数还没有专门的单测。
+- **测试覆盖**：usage 映射、子进程超时路径还没有专门的单测；CLI 参数解析已由 tests/eval-options.test.ts 覆盖。
 
 这些是主动留下的边界，不是忘记。
 
@@ -411,7 +409,7 @@ harness: 输出 ok
 | trial | 同一个任务的一次运行 |
 | trace | 模型轮次、工具调用、审批结果的事件记录 |
 | judge | 给最终回答打分的判定器 |
-| gold / broken | 正确脚本 / 错误脚本，用来测试评测器本身 |
+| mockCorrectTurns / mockWrongTurns | mock 模型的正确/错误回合序列，用来测试评测器本身 |
 | token | 模型输入输出的计量单位，也是成本的代理 |
 | required | 必过检查；全部通过，trial 才算通过 |
 

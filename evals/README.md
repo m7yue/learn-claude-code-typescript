@@ -28,7 +28,7 @@ npm run eval:real -- --baseline evals/results/<runId>/run.json
 npm run eval -- --help
 ```
 
-运行结束会打印一行汇总：
+运行开始会打印一行模式汇总，结束时打印成功率和报告路径：
 
 ```txt
 [eval] 模式: real | 裁判: llm | 任务: 3 | trials: 3
@@ -67,17 +67,18 @@ npm run eval:real -- --tasks fix-single-file --trials 1 --keep-io --keep-workspa
 - [evals/cli/config.ts](cli/config.ts) 可以填固定默认值，字段都是可选的；CLI 显式参数优先。
 - 优先级：CLI 参数 > `evalConfig` > 模式默认值（mock：1 次 / keyword；real：3 次 / llm）。
 - `mode` 不放进配置：`--real` 才走真实模型，默认 mock。
+- `--mock` / `--real` 选择模式，`--self-check` 跑评测器自检，`--out` 指定结果目录；完整列表见 `npm run eval -- --help`。
 - token、endpoint、模型 ID 继续放 `.env`，不进入仓库里的 TS 配置。
 
 ## 一次评测发生了什么
 
 1. `loader.ts` 通过 `evals/tasks/index.ts` 找到 `<id>` 的 `task.ts`，补上 `prompt.md` 和 `fixture/` 的路径，并校验字段和脚本。
 2. `runner.ts` 给每次试验（trial）建临时目录：`workspace/` 复制任务的 fixture（初始文件），`outside/` 作为越界写入的目标。
-3. `agent-runner.ts` 起一个子进程 `agent-child.ts`。子进程把 `AGENT_WORKSPACE` 指向 workspace，用 `createHarnessAgent` 跑任务，边跑边把模型/工具/审批事件写进 trace（轨迹），结束后写 `result.json`。
+3. `agent-runner.ts` 在启动子进程前把 `AGENT_WORKSPACE` 指向 workspace，然后起一个子进程 `agent-child.ts`。子进程用 `createHarnessAgent` 跑任务，边跑边把模型/工具/审批事件写进 trace（轨迹），结束后写 `result.json`。
 4. 父进程读结果，用 `checks/` 跑程序化检查，再让 `judge` 给最终回答打分。
 5. `report.ts` 把结果整理成 `run.json` 和 `report.md`。
 
-mock 模式只把模型换成脚本；工具、权限管线、工作区隔离仍然是真实的。所以 `eval:check` 能验证评测器本身，而不是一个假流程。
+mock 模式只把模型换成回放 `mockCorrectTurns` 的脚本模型；工具、权限管线、工作区隔离仍然是真实的。所以 `eval:check` 能验证评测器本身，而不是一个假流程。
 
 ## 当前任务
 
@@ -95,7 +96,7 @@ mock 模式只把模型换成脚本；工具、权限管线、工作区隔离仍
 
 - **成功率**：通过 trial 数 / 总 trial 数。一个 trial 通过 = 所有 `required` 检查都通过。
 - **平均 token**：输入 + 输出。mock 记 0；real 如果接口没返回用量（usage），显示 `—`，不按 0 算。
-- **平均延迟**：父进程测到的实际耗时，包含子进程启动和 tsx 解析。
+- **平均延迟**：父进程测到的实际延迟，包含子进程启动和 tsx 解析。
 - **裁判**：只展示分数和理由，**不参与通过/失败**。`source` 是 `keyword`、`llm` 或 `fallback`。
 - **失败明细**：列出没通过的检查、agent 错误和最终回答摘录。
 - **与基线对比**：给了 `--baseline` 才会出现，只展示成功率/token/延迟的变化，不自动判定「能不能接受」。
@@ -130,10 +131,8 @@ export default defineTask({
   checks: [
     { id: "answer", type: "final-answer", contains: ["47"] },
   ],
-  selfCheck: {
-    gold: [{ final: "47" }],
-    broken: [{ final: "不知道" }],
-  },
+  mockCorrectTurns: [{ answer: "47" }],
+  mockWrongTurns: [{ answer: "不知道" }],
 });
 ```
 
@@ -150,7 +149,8 @@ export default defineTask({
 | `expectKeywords` | 给 KeywordJudge 的关键词 |
 | `referencePoints` | 给 LLMJudge 的参考要点 |
 | `checks` | 程序化检查列表 |
-| `selfCheck` | gold / broken 脚本，用于 `eval:check` |
+| `mockCorrectTurns` | mock 模型的正确回合序列；`npm run eval`（mock）用它当模型，`eval:check` 断言它通过 |
+| `mockWrongTurns` | mock 模型的错误回合序列；`eval:check` 断言它至少失败一项 |
 
 每个检查都有 `required`（默认 true）。所有必过检查通过，trial 才算通过。可用的检查类型：
 
@@ -159,29 +159,27 @@ export default defineTask({
 | `file-content` | `path`、`contains` / `notContains` / `matches` / `equals` | 检查文件内容 |
 | `file-missing` | `path` | 确认文件没有被创建，常用于越界写入 |
 | `file-unchanged` | `path` | 和 fixture 的原始副本比文件哈希（sha256） |
-| `command` | `command`、`expectExit`、`stdoutContains` | 在 workspace 里执行命令 |
+| `command` | `command`、`expectExit`、`stdoutContains`、`timeoutMs` | 在 workspace 里执行命令 |
 | `final-answer` | `contains` / `notContains` / `matches` | 检查最终回答 |
 | `tools-used` | `names`、`minCalls` | 检查轨迹里工具调用次数 |
 
-`selfCheck` 用来验证检查器本身：
+`mockCorrectTurns` / `mockWrongTurns` 是 mock 模型的两段回合序列，用来验证检查器本身：
 
 ```ts
-selfCheck: {
-  gold: [
-    { tool: "read_file", args: { path: "docs/architecture.md" } },
-    { final: "AUTH_TTL_MINUTES 的值是 47。" },
-  ],
-  broken: [{ final: "我不知道。" }],
-}
+mockCorrectTurns: [
+  { tool: "read_file", args: { path: "docs/architecture.md" } },
+  { answer: "AUTH_TTL_MINUTES 的值是 47。" },
+],
+mockWrongTurns: [{ answer: "我不知道。" }],
 ```
 
-`npm run eval:check` 会为每个任务跑两遍：gold（正确脚本）必须通过，broken（错误脚本）必须至少失败一项。最后一步必须是 `final`，否则脚本化模型会一直重复最后一个工具调用。
+`npm run eval:check` 会为每个任务跑两遍：correct（正确回合）必须通过，wrong（错误回合）必须至少失败一项。最后一步必须是 `answer`，否则 mock 模型会一直重复最后一个工具调用。
 
 新增任务后：
 
 1. 在 `evals/tasks/<id>/task.ts` 里用 `defineTask` 写定义；
 2. 在 `evals/tasks/index.ts` import 并登记这个任务；
-3. 跑 `npm run eval:check`，确认 gold/broken 符合预期；
+3. 跑 `npm run eval:check`，确认 correct/wrong 符合预期；
 4. 跑 `npm run eval:real -- --tasks <id>` 看真实模型的结果。
 
 ## 裁判
@@ -222,6 +220,9 @@ selfCheck: {
 | `cli/options.ts` | `EvalOptions`、模式默认值、CLI/config 合并 |
 | `cli/config.ts` | 可选的默认取值；CLI 显式参数优先 |
 | `task-definition.ts` | 任务类型、zod schema、`defineTask` 和 `validateTaskDefinition` |
+| `types.ts` | 公共类型：Judge / AgentRunner 接口、轨迹事件、报告结构 |
+| `render.ts` | {{WORKSPACE}} / {{OUTSIDE}} 占位符替换 |
+| `trace.ts` | 轨迹文件读写：一行一个 JSON 事件 |
 | `loader.ts` | 加载 `task.ts`，补上 prompt 和 fixture 路径；校验在 `task-definition.ts` |
 | `runner.ts` | 任务 × trials、临时工作区、评分和汇总 |
 | `agent-runner.ts` / `agent-child.ts` | 父进程起子进程，子进程跑 `createHarnessAgent` |

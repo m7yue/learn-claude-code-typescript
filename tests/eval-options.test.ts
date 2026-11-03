@@ -68,7 +68,7 @@ test("resolveOptions 按 CLI > config > 模式默认值合并", () => {
 });
 
 test("resolveOptions 在未配置时使用模式默认值", () => {
-  assert.deepEqual(resolveOptions("fake", {}, {}), {
+  assert.deepEqual(resolveOptions("mock", {}, {}), {
     tasks: undefined,
     trials: 1,
     judge: "keyword",
@@ -84,7 +84,7 @@ test("resolveOptions 在未配置时使用模式默认值", () => {
 
 test("resolveOptions 的显式 false 能覆盖 config 的 true", () => {
   const resolved = resolveOptions(
-    "fake",
+    "mock",
     { keepIo: false, keepWorkspace: false },
     { keepIo: true, keepWorkspace: true },
   );
@@ -93,8 +93,8 @@ test("resolveOptions 的显式 false 能覆盖 config 的 true", () => {
 });
 
 test("resolveOptions 拒绝非法 trials", () => {
-  assert.throws(() => resolveOptions("fake", {}, { trials: 0 }), /trials/);
-  assert.throws(() => resolveOptions("fake", {}, { trials: 1.5 }), /trials/);
+  assert.throws(() => resolveOptions("mock", {}, { trials: 0 }), /trials/);
+  assert.throws(() => resolveOptions("mock", {}, { trials: 1.5 }), /trials/);
 });
 
 test("Commander 自动 help 包含所有参数", () => {

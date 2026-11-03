@@ -52,7 +52,7 @@ export async function runEvals(
         let run: AgentRunResult;
         try {
           run = await agent.run({
-            task,
+            taskId: task.id,
             workspace,
             outside,
             prompt,
@@ -76,7 +76,7 @@ export async function runEvals(
           finalAnswer: run.finalAnswer,
           trace: run.trace,
         });
-        const verdict = await safeJudge(judge, task, run);
+        const verdict = await safeJudge(judge, task, run, prompt);
         // 通过只看 required 检查；裁判分只展示，不参与通过/失败。
         const passed = checks.filter((check) => check.required).every((check) => check.passed);
 
@@ -130,11 +130,11 @@ export async function runEvals(
 }
 
 /** AgentRunner 自己抛错时合成一个失败结果，让检查器仍能执行。 */
-function errorRun(error: unknown, mode: "fake" | "real"): AgentRunResult {
+function errorRun(error: unknown, mode: "mock" | "real"): AgentRunResult {
   return {
     status: "error",
     finalAnswer: "",
-    tokens: mode === "fake" ? { input: 0, output: 0 } : null,
+    tokens: mode === "mock" ? { input: 0, output: 0 } : null,
     durationMs: 0,
     truncated: false,
     trace: [],
@@ -147,10 +147,12 @@ async function safeJudge(
   judge: Judge,
   task: EvalTask,
   run: AgentRunResult,
+  prompt: string,
 ): Promise<JudgeResult> {
   try {
     return await judge.evaluate({
       task,
+      prompt,
       finalAnswer: run.finalAnswer,
       trace: run.trace,
     });

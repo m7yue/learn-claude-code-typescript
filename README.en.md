@@ -205,7 +205,7 @@ npm run test:e2e
 # engineering-harness evals (mock; verifies the eval pipeline itself)
 npm run eval
 
-# eval self-check: gold must pass, broken must fail at least one required check
+# eval self-check: correct must pass, wrong must fail at least one required check
 npm run eval:check
 ```
 

@@ -16,6 +16,7 @@ import type { AgentRunInput, AgentRunResult, AgentRunner } from "./types.ts";
 const execFileAsync = promisify(execFile);
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CHILD = join(ROOT, "evals", "agent-child.ts");
+/** 子进程 stdout/stderr 的读取上限；比 checks 里命令输出的上限宽，agent 日志也从这里过。 */
 const MAX_OUTPUT = 8 * 1024 * 1024;
 
 export class HarnessAgentRunner implements AgentRunner {
@@ -33,7 +34,7 @@ export class HarnessAgentRunner implements AgentRunner {
       "tsx",
       CHILD,
       "--task-id",
-      input.task.id,
+      input.taskId,
       "--workspace",
       input.workspace,
       "--outside",
@@ -49,8 +50,8 @@ export class HarnessAgentRunner implements AgentRunner {
       "--max-turns",
       String(input.maxTurns),
     ];
-    if (input.mode === "fake") {
-      args.push("--script", input.script ?? "gold");
+    if (input.mode === "mock") {
+      args.push("--script", input.script ?? "correct");
     }
 
     // cwd 保持仓库根目录，保证 .env 和 tsx 能解析；
@@ -59,7 +60,7 @@ export class HarnessAgentRunner implements AgentRunner {
       ...process.env,
       AGENT_WORKSPACE: input.workspace,
     };
-    if (input.mode === "fake") {
+    if (input.mode === "mock") {
       // 显式覆盖 .env 里的 real，避免本地配置让自检触网。
       env.AGENT_MODE = "mock";
       env.EVAL_OFFLINE = "1";
@@ -98,7 +99,7 @@ export class HarnessAgentRunner implements AgentRunner {
       return {
         status: timedOut ? "timeout" : "error",
         finalAnswer: "",
-        tokens: input.mode === "fake" ? { input: 0, output: 0 } : null,
+        tokens: input.mode === "mock" ? { input: 0, output: 0 } : null,
         durationMs: Date.now() - startedAt,
         truncated: trace.some(
           (event) => event.type === "model" && event.stopReason === "max_tokens",
