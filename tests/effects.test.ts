@@ -28,6 +28,31 @@ test("Algebraic Effects 能把 handler 结果送回 Agent", async () => {
   assert.deepEqual(said, ["学习 Agent"]);
 });
 
+test("handler 抛错后 Generator 在 catch 内 yield 的新效应会被执行", async () => {
+  const calls: string[] = [];
+  const result = await runEffects<TestEffect, string>(
+    function* program(perform: Perform<TestEffect>) {
+      try {
+        yield* perform({ type: "Ask", input: { prompt: "first" } });
+        return "unreachable";
+      } catch {
+        return yield* perform({ type: "Ask", input: { prompt: "retry" } });
+      }
+    },
+    {
+      Ask: (effect) => {
+        calls.push(effect.input.prompt);
+        if (effect.input.prompt === "first") throw new Error("network down");
+        return `answered:${effect.input.prompt}`;
+      },
+      Say: () => {},
+    },
+  );
+
+  assert.equal(result, "answered:retry");
+  assert.deepEqual(calls, ["first", "retry"]);
+});
+
 test("TodoList 只允许一个 in_progress", () => {
   const todos = new TodoList();
   assert.throws(() => {

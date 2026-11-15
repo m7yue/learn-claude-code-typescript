@@ -35,10 +35,9 @@ export async function runEffects<E extends Effect, Result>(
   handlers: EffectHandlers<E>,
 ): Promise<Result> {
   const iterator = program(createPerform<E>());
-  let lastValue: unknown;
+  let step = iterator.next();
 
   while (true) {
-    const step = iterator.next(lastValue);
     if (step.done) {
       return step.value;
     }
@@ -50,16 +49,10 @@ export async function runEffects<E extends Effect, Result>(
     }
 
     try {
-      lastValue = await handler(effect);
+      step = iterator.next(await handler(effect));
     } catch (error) {
-      const thrown = iterator.throw?.(error);
-      if (!thrown) {
-        throw error;
-      }
-      if (thrown.done) {
-        return thrown.value;
-      }
-      lastValue = thrown.value;
+      // 把失败交还给 Agent 逻辑；它在 catch 内 yield 的新效应由 throw() 返回，回到循环顶部照常执行
+      step = iterator.throw(error);
     }
   }
 }
