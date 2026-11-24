@@ -5,9 +5,12 @@ English | [中文]
 [English]: ./README.en.md
 [中文]: ./README.md
 
-A learning project about Agent harnesses for frontend engineers: this repo rewrites the 20 progressive lessons from [Learn Claude Code](https://github.com/shareai-lab/learn-claude-code) into TypeScript + Algebraic Effects.
+[![CI](https://github.com/m7yue/learn-claude-code-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/m7yue/learn-claude-code-typescript/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-This repository is not a product reproduction of Claude Code, nor is it a complete coding agent framework. It is more like a set of runnable learning notes: it uses TypeScript code to break apart agent loop, tool calls, permission, hooks, todo, subagent, skill, compact, memory, task, team, MCP, and other mechanisms chapter by chapter, then explains their shared engineering structure from an algebraic effects perspective.
+A reference implementation of an Agent harness built from scratch in TypeScript with algebraic effects: chapters `s01`–`s20` progressively implement the agent loop, tool calls, permissions, hooks, todos, subagents, context compaction, memory, the task system, teams, MCP, and other mechanisms; `src/core` + `src/modules` distill the reusable parts into an engineering module layer shared by the CLI and the evals; the repository is backed by a full-repo typecheck, 26 test files, a 20-chapter end-to-end regression, and a self-checked eval system (`evals/`).
+
+The chapter organization follows [Learn Claude Code](https://github.com/shareai-lab/learn-claude-code) as inspiration; the implementation is an independent TypeScript rewrite — not a port of that course, and not a reproduction of Claude Code. All chapters run offline in mock mode by default, with no API key; which side effects become real once a model is attached (bash, files, git), and which stay simulated for teaching, is documented in the boundary notes of the "Real model" section.
 
 If you are not yet familiar with algebraic effects, you can think of it this way:
 
@@ -21,7 +24,7 @@ A more complete introduction is in [docs/en/algebraic-effects-primer.md](docs/en
 
 The motivation for this project is simple: many frontend engineers already use tools such as Claude Code, Cursor, and Codex, but it is not easy to truly understand the harness engineering behind them.
 
-The original Learn Claude Code used Python to demonstrate these mechanisms. I wanted to translate it into TypeScript, which frontend engineers are more familiar with, and further restate it using first principles and algebraic effects:
+The original Learn Claude Code used Python to demonstrate these mechanisms. I re-implemented them in TypeScript, which frontend engineers are more familiar with, and restated them using first principles and algebraic effects:
 
 ```txt
 Agent = model agency + harness
@@ -29,14 +32,6 @@ Harness = loop + tools + permissions + context + memory + state + protocols
 ```
 
 The model is responsible for generating intentions, while the harness is responsible for interpreting intentions, executing side effects, injecting results, maintaining boundaries, and preserving state. The part that engineers can really design is mainly the harness.
-
-## AI collaboration explanation
-
-This project is a learning-oriented engineering project completed through collaboration with AI.
-
-I am responsible for asking questions, setting direction, judging whether the abstractions are right, checking course structure, and verifying expression. AI is responsible for large-scale code transformation, chapter drafts, refactoring suggestions, and document generation. This process itself is also part of what the project intends to convey: we are not just "using AI to write code", we can also use AI to help ourselves understand the engineering principles behind AI coding agents.
-
-So this repository is both a TypeScript tutorial and an example of AI-assisted learning.
 
 ## Core perspective: Algebraic Effects
 
@@ -76,13 +71,13 @@ function* agentLoop(perform: PerformFn<MyEffect>) {
 
 This code does not execute the shell directly. It only declares an intention. The real execution, interception, approval, mock, logging, or sandboxing is decided by the handler.
 
-## Study path
+## Capability matrix: 20 chapters at a glance
 
-The recommended path is to use [Learn Claude Code](https://learn.shareai.run/zh/) for comparison: first read the corresponding chapter on the original site to understand the motivation, then return to this repository to see the TypeScript + Algebraic Effects version.
+The recommended way is to study alongside [Learn Claude Code](https://learn.shareai.run/zh/): first read the corresponding chapter on the original site to understand the motivation, then return to this repository to see the TypeScript + Algebraic Effects version.
 
 The official site now shows **20 chapters across 5 concern groups** and maps **roughly 1:1** onto this repository's `s01`–`s20` (same numbers, same order), so you can pair chapters directly by number. See [docs/en/learn-shareai-crosswalk.md](docs/en/learn-shareai-crosswalk.md) for details.
 
-The main learning path is still `s01_agent_loop/` through `s20_comprehensive/`. Each chapter includes:
+The main line is `s01_agent_loop/` through `s20_comprehensive/`. Each chapter includes:
 
 - `README.md`: first principles, algebraic effects perspective, code explanation
 - `agent.ts`: the chapter's effects, handlers, agent generator, and startup entry
@@ -144,13 +139,13 @@ README.en.md
 | [s19](s19_mcp_plugin/) | MCP Tools | `MCPConnect`, `AssembleToolPool` (host, pre-loop), `MCPToolCall` (model-triggered) |
 | [s20](s20_comprehensive/) | Comprehensive Agent | all previous mechanisms |
 
-## Project structure
+## Two-layer architecture and project structure
 
 ```txt
 learn-claude-code-typescript/
 ├── runtime/
 │   ├── core.ts              # minimal algebraic effects runtime used by the chapters
-│   ├── types.ts             # shared types for the lessons
+│   ├── types.ts             # shared types for the chapters
 │   ├── env.ts               # mode resolution (mock/real) + .env loading
 │   ├── model.ts             # Anthropic-compatible client + callChat switch (model/maxTokens overrides)
 │   ├── errors.ts            # error classification by name/message
@@ -171,6 +166,8 @@ learn-claude-code-typescript/
 └── .env.example             # real-mode config template (DeepSeek by default)
 ```
 
+The tree lists only the main files: `runtime/` actually contains 18 source files, and `s20_comprehensive/` splits its mechanisms into separate modules. The engineering layer consists of 7 files in `src/core` (agent loop, effect system, ScriptedModel, AnthropicModel, tool specs, etc.) plus 22 reusable modules in `src/modules`; `src/harness-agent.ts` is the single assembly shared by the CLI (`src/harness.ts`) and `evals/`, so the two cannot drift apart.
+
 There are two layers of code:
 
 - `runtime/` + `sXX/` is the main teaching code, emphasizing chapter-by-chapter progression and readability.
@@ -179,6 +176,21 @@ There are two layers of code:
 These two layers are not competing implementations. The teaching chapters intentionally keep some repetition so learners can see a complete closed loop in one file; the engineering layer abstracts repeatable patterns for real project migration.
 
 Chapter runtime state (tasks, memory, mailboxes, cron, worktree events) is written under the **current working directory** in hidden paths: `.tasks/`, `.memory/`, `.transcripts/`, `.task_outputs/`, `.mailboxes/`, `.worktrees/`, `.scheduled_tasks.json`. Override the root with the `AGENT_WORKSPACE` env var (the E2E tests use it to isolate side effects into a temp dir).
+
+## Quality assurance
+
+Every change goes through a fixed acceptance pipeline, fully offline and without any API key:
+
+| Layer | Command | Coverage |
+| --- | --- | --- |
+| Type check | `npm run typecheck` | full-repo `tsc --noEmit` with `strict` on |
+| Unit tests | `npm test` | 26 test files (~2,900 lines): runtime shared code, src engineering modules, and the evals harness itself |
+| E2E regression | `npm run test:e2e` | every chapter re-run as an isolated child process: forced mock, side effects quarantined into temp dirs, no network |
+| Eval self-check | `npm run eval:check` | the eval harness's own correctness: correct turns must all pass, wrong turns must fail at least one required check |
+
+Type check, unit tests, the E2E regression, and the eval self-check run in GitHub Actions on every push (see the badge at the top).
+
+`evals/` is the eval system for the engineering harness: 3 fixed tasks (read a file and answer, fix a real code defect, permission boundaries), 6 programmatic check types (file content, file hash, command exit code, final answer, tool-call counts, etc.), two judges (keyword and LLM), reporting success rate, tokens, latency, and `report.md`. Its known limits are documented too: the tasks cover basic tools, permissions, and answers — not todos, teams, cron, or worktrees; real models are stochastic, so small samples show trends only. The usage manual is [evals/README.md](evals/README.md); for how each step works in the code and why it is designed that way, see [evals/EXPLAINED.md](evals/EXPLAINED.md).
 
 ## Quick start
 
@@ -236,7 +248,7 @@ Key points:
 - To switch providers (GLM / Kimi / Anthropic), just change `ANTHROPIC_BASE_URL` + `MODEL_ID` in `.env`; examples are in `.env.example`.
 - `.env` is git-ignored — **never commit keys**.
 
-## Recommended learning approach
+## Recommended reading approach
 
 1. Start with `s01_agent_loop`, run the code, then read the README.
 2. Ask one question per chapter: what capability does this chapter add to the harness?
@@ -252,8 +264,17 @@ For more details, see:
 - [docs/en/chapter-map.md](docs/en/chapter-map.md)
 - [docs/en/study-workflow.md](docs/en/study-workflow.md)
 
+## Working with AI
+
+This project was built in collaboration with AI, with a fixed division of labor:
+
+- I was responsible for: abstraction design and mechanism trade-offs (which Effect / Handler / State each chapter introduces, how the two code layers are split), correctness acceptance (the expected behavior of every mechanism was defined and checked by me), test and eval design (which chapters the regression covers, how eval tasks and their pass conditions are determined), and the structure and wording of the documentation.
+- AI was responsible for: executing code conversion, chapter drafts, refactoring suggestions, and first drafts of the documents.
+
+This division of labor also explains the share that tests and evals take in this repository: AI-assisted code only counts as done after passing the same type check, unit tests, and end-to-end regression.
+
 ## Acknowledgments
 
-This project is inspired by [shareai-lab/learn-claude-code](https://github.com/shareai-lab/learn-claude-code) and re-expresses the core ideas in TypeScript and Algebraic Effects.
+Chapter topics and overall structure follow [shareai-lab/learn-claude-code](https://github.com/shareai-lab/learn-claude-code), an open-source Python course (Chinese site: [learn.shareai.run/zh](https://learn.shareai.run/zh/)). The implementation is independent: the TypeScript code was written from scratch, and the `src/` engineering layer, the tests, and the eval system are additions of this project — it is not a port of that course.
 
-The original project Chinese site is [learn.shareai.run/zh](https://learn.shareai.run/zh/).
+This project is released under the MIT license; see [LICENSE](LICENSE).

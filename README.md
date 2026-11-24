@@ -5,9 +5,12 @@
 [English]: ./README.en.md
 [中文]: ./README.md
 
-面向前端工程师的 Agent harness 学习项目：把 [Learn Claude Code](https://github.com/shareai-lab/learn-claude-code) 的 20 个递进课程，改写成 TypeScript + Algebraic Effects 版本。
+[![CI](https://github.com/m7yue/learn-claude-code-typescript/actions/workflows/ci.yml/badge.svg)](https://github.com/m7yue/learn-claude-code-typescript/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
-这个仓库不是 Claude Code 的产品复刻，也不是一个完整 Coding Agent 框架。它更像一套可运行的学习笔记：用 TypeScript 代码把 Agent loop、工具调用、权限、hooks、todo、subagent、skill、compact、memory、task、team、MCP 等机制逐章拆开，再用代数效应视角解释它们共同的工程结构。
+用 TypeScript + 代数效应从零实现的 Agent Harness 参考实现：`s01`–`s20` 二十个章节递进实现 Agent loop、工具调用、权限、hooks、todo、subagent、context 压缩、memory、任务系统、团队协作、MCP 等机制；`src/core` + `src/modules` 把其中可复用的部分抽取成工程模块层，由 CLI 与评测共用；配套全仓库类型检查、26 个测试文件、20 章端到端回归，以及一套带自检的评测系统（`evals/`）。
+
+章节组织参考了 [Learn Claude Code](https://github.com/shareai-lab/learn-claude-code) 的课程结构，实现是独立的 TypeScript 重写：不是该课程的复刻或翻译版，也不是 Claude Code 的产品复刻。所有章节默认 mock 模式离线运行，不需要 API Key；接入真实模型后哪些副作用是真的（bash、文件、git）、哪些是教学模拟，见「真实模型」一节的边界说明。
 
 如果你还不了解代数效应，可以先把它理解成一句话：
 
@@ -21,7 +24,7 @@ Agent 逻辑只声明“我要做什么”，运行时 handler 再决定“怎�
 
 我做这个项目的动机很简单：很多前端工程师已经开始使用 Claude Code、Cursor、Codex 一类工具，但真正理解它们背后的 harness 工程并不容易。
 
-原版 Learn Claude Code 用 Python 展示了这些机制。我希望把它翻译成前端工程师更熟悉的 TypeScript，同时进一步用第一性原理和代数效应重述：
+原版 Learn Claude Code 用 Python 展示了这些机制。我用前端工程师更熟悉的 TypeScript 把这些机制重新实现了一遍，同时用第一性原理和代数效应重述：
 
 ```txt
 Agent = 模型的 agency + harness
@@ -29,14 +32,6 @@ Harness = loop + tools + permissions + context + memory + state + protocols
 ```
 
 模型负责产生意图，harness 负责解释意图、执行副作用、注入观察结果、维护边界和状态。工程师真正能设计的部分，主要就是 harness。
-
-## AI 协作说明
-
-这个项目是我和 AI 协作完成的学习型工程。
-
-我负责提出问题、设定方向、判断抽象是否成立、校验课程结构和表达方式；AI 负责大量代码转换、章节草稿、重构建议和文档生成。这个过程本身也是项目想传达的一部分：我们不只是“使用 AI 写代码”，还可以用 AI 帮自己理解 AI coding agent 背后的工程原理。
-
-所以这个仓库既是一份 TypeScript 教程，也是一份 AI 协作学习的样本。
 
 ## 核心视角：代数效应
 
@@ -76,13 +71,13 @@ function* agentLoop(perform: PerformFn<MyEffect>) {
 
 这段代码不直接执行 shell。它只是声明一个意图。真正执行、拦截、审批、mock、记录日志或替换成隔离环境，都由 handler 决定。
 
-## 学习路径
+## 能力矩阵：20 章机制一览
 
 更推荐的方式是结合 [Learn Claude Code](https://learn.shareai.run/zh/) 对照学习：先读原站对应章节理解动机，再回到本仓库看 TypeScript + Algebraic Effects 版本。
 
 官方站点现在是 **20 章、5 大关注点**，与本仓库 `s01`–`s20` **基本 1:1 对应**（章节号、顺序一致），可以直接按章号对照，具体见 [docs/zh/learn-shareai-crosswalk.md](docs/zh/learn-shareai-crosswalk.md)。
 
-主线课程仍然是 `s01_agent_loop/` 到 `s20_comprehensive/`。每章包含：
+主线章节是 `s01_agent_loop/` 到 `s20_comprehensive/`。每章包含：
 
 - `README.md`：第一性原理、代数效应视角、代码讲解
 - `agent.ts`：本章 Effect、Handler、Agent Generator 和启动入口
@@ -144,13 +139,13 @@ README.md
 | [s19](s19_mcp_plugin/) | MCP Tools | `MCPConnect`、`AssembleToolPool`（宿主循环前）, `MCPToolCall`（模型触发） |
 | [s20](s20_comprehensive/) | Comprehensive Agent | 综合前 19 章机制 |
 
-## 项目结构
+## 两层架构与项目结构
 
 ```txt
 learn-claude-code-typescript/
 ├── runtime/
 │   ├── core.ts              # 逐章教学使用的最小代数效应运行时
-│   ├── types.ts             # 课程共享类型
+│   ├── types.ts             # 章节共享类型
 │   ├── env.ts               # 运行模式解析（mock/real）+ .env 加载
 │   ├── model.ts             # Anthropic 兼容客户端 + callChat 开关（支持 model/maxTokens 覆盖）
 │   ├── errors.ts            # 错误分类（按 name/message 字符串匹配）
@@ -171,6 +166,8 @@ learn-claude-code-typescript/
 └── .env.example             # real 模式配置模板（默认 DeepSeek）
 ```
 
+目录树只列出主要文件：`runtime/` 实际有 18 个源文件，`s20_comprehensive/` 把各机制拆成了独立模块。工程层的具体构成是 `src/core` 7 个文件（Agent loop、Effect 系统、ScriptedModel、AnthropicModel、工具规格等）加 `src/modules` 22 个可复用模块；`src/harness-agent.ts` 由 CLI（`src/harness.ts`）和 `evals/` 共用同一套组装，避免两份实现漂移。
+
 这里有两层代码：
 
 - `runtime/` + `sXX/` 是主线教学代码，强调逐章展开和可读性。
@@ -179,6 +176,21 @@ learn-claude-code-typescript/
 这两层不是两套互相竞争的实现。主线章节故意保留一定重复，让学习者在单个文件里看到完整的来回流程；工程化参考层则把这些重复模式抽成模块，方便理解如何迁移到真实项目。
 
 章节的运行时状态（任务、记忆、信箱、cron、worktree 事件）写到**当前工作目录**下的隐藏路径：`.tasks/`、`.memory/`、`.transcripts/`、`.task_outputs/`、`.mailboxes/`、`.worktrees/`、`.scheduled_tasks.json`。可用环境变量 `AGENT_WORKSPACE` 覆盖根目录（端到端测试用它把副作用隔离到临时目录）。
+
+## 质量保障
+
+改动有一套固定的验收流程，全部离线完成，不需要 API Key：
+
+| 层 | 命令 | 覆盖内容 |
+| --- | --- | --- |
+| 类型检查 | `npm run typecheck` | 全仓库 `tsc --noEmit`，开启 `strict` |
+| 单元测试 | `npm test` | 26 个测试文件（约 2,900 行）：runtime 共享代码、src 工程模块、evals 评测器本身 |
+| 端到端回归 | `npm run test:e2e` | 20 个章节逐章以独立子进程重跑：强制 mock，副作用隔离进临时目录，不访问网络 |
+| 评测自检 | `npm run eval:check` | 评测器自身的正确性：正确回合必须全部通过，错误回合必须至少失败一项检查 |
+
+类型检查、单元测试、端到端回归、评测自检已接入 GitHub Actions，每次提交自动运行（见顶部徽章）。
+
+`evals/` 是工程层 harness 的评测系统：3 个固定任务（读文件并回答、修复真实代码缺陷、权限边界），6 种程序化检查（文件内容、文件哈希、命令退出码、最终回答、工具调用次数等），Keyword / LLM 两种裁判，输出成功率、token、延迟和 `report.md`。它的已知边界同样写在文档里：任务只覆盖基础工具、权限和回答，不覆盖 todo、团队、cron、worktree；真实模型有随机性，小样本只看趋势。使用手册见 [evals/README.md](evals/README.md)，每一步在代码里怎么走、为什么这样设计见 [evals/EXPLAINED.md](evals/EXPLAINED.md)。
 
 ## 快速开始
 
@@ -236,7 +248,7 @@ npm run eval:real         # 工程层评测：真实模型 + 3 个任务 × 3 �
 - 想换其他 provider（GLM / Kimi / Anthropic），只需改 `.env` 里的 `ANTHROPIC_BASE_URL` + `MODEL_ID`，示例见 `.env.example`。
 - `.env` 已被 gitignore，**切勿把 key 写进代码或提交**。
 
-## 推荐学习方式
+## 建议阅读方式
 
 1. 从 `s01_agent_loop` 开始，先跑代码，再读 README。
 2. 每章只问一个问题：这一章给 harness 增加了什么能力？
@@ -252,8 +264,17 @@ npm run eval:real         # 工程层评测：真实模型 + 3 个任务 × 3 �
 - [docs/zh/chapter-map.md](docs/zh/chapter-map.md)
 - [docs/zh/study-workflow.md](docs/zh/study-workflow.md)
 
+## AI 协作方式
+
+这个项目由我和 AI 协作完成，分工如下：
+
+- 我负责：抽象设计与机制取舍（每一章拆出哪些 Effect / Handler / State、两层代码如何分层）、正确性验收（每个机制的预期行为由我定义和检查）、测试与评测设计（回归测试覆盖哪些章节、评测任务和通过条件如何确定）、文档结构与表达把关。
+- AI 负责：代码转换、章节草稿、重构建议和文档初稿的执行。
+
+这套分工也解释了测试和评测在这个仓库里的占比：AI 参与产出的代码，必须通过同一套类型检查、单元测试和端到端回归才算完成。
+
 ## 致谢
 
-本项目参考 [shareai-lab/learn-claude-code](https://github.com/shareai-lab/learn-claude-code) 的课程结构和核心思想，并以 TypeScript 和 Algebraic Effects 重新表达。
+章节主题与组织结构参考 [shareai-lab/learn-claude-code](https://github.com/shareai-lab/learn-claude-code)（Python 编写的开源课程，中文站点：[learn.shareai.run/zh](https://learn.shareai.run/zh/)）。实现是独立的：TypeScript 代码从零编写，`src/` 工程模块层、测试与评测体系为本项目独立增加，不是该课程的复刻或翻译版。
 
-原项目中文站：[learn.shareai.run/zh](https://learn.shareai.run/zh/)
+本项目以 MIT 许可证发布，见 [LICENSE](LICENSE)。

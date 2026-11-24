@@ -54,7 +54,6 @@ export class BackgroundTasks {
 
     if (options.timeoutMs !== undefined) {
       timer = setTimeout(cancel, options.timeoutMs);
-      timer.unref?.();
     }
     // 外部 cancel(id) 会 abort 内部 controller，这里同步 resolve done。
     controller.signal.addEventListener("abort", finish, { once: true });
